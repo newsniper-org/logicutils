@@ -1,0 +1,28 @@
+[package]
+name = "lu-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared types, traits, and output formats for logicutils"
+
+[features]
+default = ["blake3", "crc32"]
+blake3 = ["dep:blake3"]
+sha3 = ["dep:sha3", "dep:digest"]
+crc32 = ["dep:crc32fast"]
+crc64 = []
+crc128 = []
+
+[dependencies]
+blake3 = { workspace = true, optional = true }
+sha3 = { version = "0.10", optional = true }
+digest = { version = "0.10", optional = true }
+crc32fast = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+csv = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,134 @@
+.TH LU\-KB 5 "2026-04-27" "logicutils 0.1.0" "File Formats"
+.SH NAME
+lu\-kb \- logicutils knowledge\-base language
+.SH DESCRIPTION
+The logicutils knowledge base is an indentation\-sensitive language
+combining deductive, abductive, and constraint logic programming with a
+small functional core. KB files are read by
+.BR lu\-query (1)
+and may be referenced from rule files consumed by
+.BR lu\-rule (1).
+
+A module is a sequence of top\-level
+.IR items :
+fact blocks, rule blocks, abductive blocks, constraint blocks, type
+declarations, function definitions, relation declarations, instance
+declarations, and import or export directives.
+
+.SH SYNTAX
+.SS Lexical structure
+Lines beginning with
+.B #
+are comments. Indentation, expressed in spaces or tabs consistently
+within a file, opens and closes blocks the same way Python does:
+deeper lines belong to the immediately preceding header line.
+
+.SS Facts
+.RS
+.nf
+fact depends:
+    main.o <\- main.c
+    main.o <\- header.h
+.fi
+.RE
+.PP
+Each line in a fact block is a directed pair
+.I "head <\- arg1 arg2 ..."
+that is added to the predicate named on the
+.B fact
+line.
+
+.SS Rules
+.RS
+.nf
+rule stale(Target):
+    depends(Target, Dep)
+    newer(Dep, Target)
+.fi
+.RE
+.PP
+A rule head is followed by a body of goals. Goals are predicate calls,
+.B not
+goals, conditions, or
+.B let
+bindings. Variables begin with an uppercase letter; ground values are
+identifiers, integers, floats, booleans, or strings.
+
+.SS Abduction
+.RS
+.nf
+abduce missing_source(File):
+    depends(Target, File)
+    not exists(File)
+    explain "source file may need generation"
+.fi
+.RE
+
+.SS Constraints
+.RS
+.nf
+constraint valid_alignment(x: SampleId, y: Reference):
+    x != y
+    exists("{x}.fastq")
+.fi
+.RE
+
+.SS Functions
+.RS
+.nf
+fn align_cmd(sample, ref):
+    "bwa mem {ref}.fa {sample}.fastq"
+.fi
+.RE
+Pipelines use the
+.B |>
+operator and lambdas use
+.IB args " => " expr \fR.\fP
+
+.SS Types
+.RS
+.nf
+type SampleId = String where matches("[A\-Z]{2}[0\-9]+")
+
+data AlignResult:
+    bam_path: Path
+    quality:  Float where value >= 0.0
+.fi
+.RE
+
+.SS Relations and instances
+Relations are multi\-parameter type relations. Instances may be
+declared outside the relation block, may host nested instances under a
+.B where
+clause, and inherit the constraints of every enclosing instance.
+
+.RS
+.nf
+relation Processable(Input, Output, Engine):
+    fn process(input: Input, engine: Engine) \-> Output
+
+instance Processable(Dataset, Model, GPU):
+    fn process(data, engine):
+        train(data)
+
+    instance Batchable(Dataset, Model) where Engine == GPU:
+        fn batch_size(input): estimate_vram(input)
+.fi
+.RE
+
+.SS Imports
+.RS
+.nf
+import bio.alignment (align, index)
+import utils.paths as P
+.fi
+.RE
+.B import
+may also appear inside any block, in which case its bindings are scoped
+to that block.
+
+.SH SEE ALSO
+.BR lu\-query (1),
+.BR lu\-rule (1)
+.SH AUTHOR
+NEWSNIPER.

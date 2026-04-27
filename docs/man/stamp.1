@@ -1,0 +1,83 @@
+.TH STAMP 1 "2026-04-27" "logicutils 0.1.0" "User Commands"
+.SH NAME
+stamp \- record, query, and reconcile file signatures in a content store
+.SH SYNOPSIS
+.B stamp record
+[\fIOPTIONS\fR] \fIFILE\fR...
+.br
+.B stamp query
+[\fIOPTIONS\fR] \fIFILE\fR...
+.br
+.B stamp diff
+[\fIOPTIONS\fR] \fIFILE\fR...
+.br
+.B stamp gc
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B stamp
+manages an on\-disk content store (default
+.IR .lu\-store/ )
+that maps file paths to their cryptographic and structural signatures.
+The store is laid out as a nested hashtable: the path is hashed with
+FNV\-1a, the first byte is used as a bucket directory, and the remainder
+becomes a JSON file holding all recorded methods for that path.
+
+.B stamp
+is the storage backend used by
+.BR freshcheck (1)
+and may be invoked directly to inspect or repair the store.
+.SH SUBCOMMANDS
+.TP
+.B record
+Compute signatures for the given files using \fB\-\-method\fR and persist
+them. Existing entries are merged.
+.TP
+.B query
+Print recorded signatures for the given files in the chosen output format.
+Files with no recorded signature are skipped silently; pair with
+\fB\-\-format=plain\fR for human reading.
+.TP
+.B diff
+Compare the current contents of each file to the recorded signature.
+Output one line per file describing whether it is unchanged, changed,
+or missing from the store.
+.TP
+.B gc
+Remove store entries whose underlying files no longer exist.
+.SH OPTIONS
+.TP
+.BI \-\-method= METHOD
+Signature method: \fIhash\fR, \fIchecksum\fR, \fIsize\fR, \fItimestamp\fR.
+May be repeated to record several signatures per file.
+.TP
+.BI \-\-hash\-algo= ALGO
+.BI \-\-checksum\-algo= ALGO
+Same meanings as in
+.BR freshcheck (1).
+.TP
+.BI \-\-store= PATH
+Store directory.
+.TP
+.BI \-\-format= FORMAT
+Output format: \fIplain\fR, \fIjson\fR, \fItsv\fR, \fIcsv\fR, \fItoml\fR,
+\fIshell\fR.
+.TP
+.B \-\-protocol\-version
+Print the CLI protocol version and exit.
+.SH EXIT STATUS
+0 on success, 1 if a queried file has no record (or
+.B diff
+finds a mismatch),
+2 on error.
+.SH FILES
+.TP
+.I .lu\-store/
+Default store directory. Created on first use.
+.TP
+.I .lu\-store/<bucket>/<rest>.json
+Per\-path signature file.
+.SH SEE ALSO
+.BR freshcheck (1),
+.BR lu\-deps (1)
+.SH AUTHOR
+NEWSNIPER.
