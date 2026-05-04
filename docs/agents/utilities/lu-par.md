@@ -26,7 +26,7 @@ means "no predecessors".
 | `--keep-going`    | siblings of a failed task continue |
 | `--retry=N`       | retry a failed task up to N times |
 | `--progress`      | emit progress to stderr |
-| `--transaction`   | all-or-nothing: roll back store entries on any failure |
+| `--transaction[=PATH]` | all-or-nothing: snapshot `PATH` (default `.lu-store`) before the run, restore it on any failure (after retries) |
 | `--taskfile=PATH` | read tasks from file instead of stdin |
 
 ## Algorithm

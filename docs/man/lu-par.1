@@ -37,9 +37,11 @@ Retry a failed task up to \fIN\fR times before declaring it failed.
 .B \-\-progress
 Emit progress diagnostics on standard error.
 .TP
-.B \-\-transaction
-Treat the entire DAG as a transaction: on any failure, roll back the
-content store entries written by completed tasks and exit non\-zero.
+.B \-\-transaction[=\fIPATH\fR]
+Treat the entire DAG as a transaction. Snapshot \fIPATH\fR (default
+\fB.lu\-store/\fR) before scheduling and, if any task ultimately fails
+(after retries), restore the directory bit\-for\-bit before exiting
+non\-zero. On a fully successful run the snapshot is discarded.
 .TP
 .BI \-\-taskfile= PATH
 Read tasks from \fIPATH\fR instead of standard input.

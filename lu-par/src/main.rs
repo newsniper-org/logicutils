@@ -34,6 +34,12 @@ struct Cli {
     #[arg(long)]
     progress: bool,
 
+    /// All-or-nothing transaction: snapshot the given content-store path
+    /// before running and restore it on any task failure (after retries).
+    /// If the flag is supplied without a value, defaults to `.lu-store`.
+    #[arg(long, num_args = 0..=1, default_missing_value = ".lu-store")]
+    transaction: Option<PathBuf>,
+
     /// Print protocol version and exit
     #[arg(long)]
     protocol_version: bool,
@@ -107,7 +113,14 @@ fn main() -> std::process::ExitCode {
         eprintln!("lu-par: executing {} tasks with {} jobs", tasks.len(), cli.jobs);
     }
 
-    match lu_par::execute_par(&tasks, cli.jobs, cli.keep_going, cli.retry, cli.prefix) {
+    let opts = lu_par::ExecOptions {
+        parallelism: cli.jobs,
+        keep_going: cli.keep_going,
+        retry: cli.retry,
+        prefix_output: cli.prefix,
+        transaction: cli.transaction.clone(),
+    };
+    match lu_par::execute_par_with(&tasks, opts) {
         Ok(results) => {
             let failed: Vec<_> = results.iter().filter(|r| !r.success).collect();
             if cli.progress {

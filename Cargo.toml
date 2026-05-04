@@ -22,12 +22,16 @@ repository = "https://github.com/logicutils/logicutils"
 
 [workspace.dependencies]
 lu-common = { path = "lu-common" }
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-blake3 = "1"
-crc32fast = "1"
-toml = "0.8"
-csv = "1"
-thiserror = "2"
-glob = "0.3"
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+blake3 = "1.8"
+crc32fast = "1.5"
+crc = "3"
+toml = "1.1"
+csv = "1.4"
+thiserror = "2.0"
+glob = "0.3.3"
+
+[profile.release]
+lto = "thin"

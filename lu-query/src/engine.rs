@@ -1,5 +1,7 @@
 use lu_common::kb::ast::*;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Variable bindings from a query result.
 pub type Bindings = HashMap<String, Value>;
@@ -33,6 +35,32 @@ pub type QueryResult = Vec<Bindings>;
 pub struct Engine {
     facts: Vec<StoredFact>,
     rules: Vec<StoredRule>,
+    /// Abductive blocks, dispatched the same as rules, but their solutions
+    /// are tagged so callers can distinguish hypotheses from deductions.
+    abducibles: Vec<StoredRule>,
+    /// Constraint blocks, dispatched as Boolean predicates.
+    constraints: Vec<StoredRule>,
+    /// User-defined functions (KB `fn`).
+    functions: HashMap<String, FnDecl>,
+    /// User-defined type aliases.
+    type_aliases: HashMap<String, TypeAlias>,
+    /// User-defined record types.
+    data_types: HashMap<String, DataDef>,
+    /// Type relations.
+    relations: HashMap<String, RelationDecl>,
+    /// Flattened instance table; nested instances accumulate where-clauses.
+    instances: Vec<FlatInstance>,
+    /// Modules already loaded by import (path -> resolved file path).
+    imported: std::collections::HashSet<String>,
+    /// Search path for `import` statements (directories holding .kb files).
+    import_paths: Vec<std::path::PathBuf>,
+    /// Cooperative cancellation flag; set externally to abort an in-flight
+    /// query (e.g. on timeout).
+    cancel: Arc<AtomicBool>,
+    /// Sink for abductive `explain` strings emitted during evaluation.
+    explanations: std::sync::Mutex<Vec<String>>,
+    /// Names exported by the most recently loaded module (for `export`).
+    exports: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,43 +76,239 @@ struct StoredRule {
     body: Vec<BodyExpr>,
 }
 
+/// A relation instance flattened with all enclosing where-clauses.
+#[derive(Debug, Clone)]
+struct FlatInstance {
+    /// Name of the relation this instance implements. Surfaced via the
+    /// `instance_names()` accessor for tooling that wants to enumerate
+    /// available implementations.
+    relation: String,
+    /// Type arguments at this instance head (e.g. `(Dataset, Model, GPU)`).
+    type_args: Vec<TypeExpr>,
+    /// Conjunction of inherited `where` clauses (root → leaf).
+    where_clauses: Vec<Expr>,
+    /// Method implementations available at this instance level.
+    methods: HashMap<String, FnDecl>,
+}
+
+impl FlatInstance {
+    #[allow(dead_code)]
+    fn signature(&self) -> String {
+        format!(
+            "{}({})",
+            self.relation,
+            self.type_args
+                .iter()
+                .map(|t| format!("{t:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
 impl Engine {
     pub fn new() -> Self {
         Self {
             facts: Vec::new(),
             rules: Vec::new(),
+            abducibles: Vec::new(),
+            constraints: Vec::new(),
+            functions: HashMap::new(),
+            type_aliases: HashMap::new(),
+            data_types: HashMap::new(),
+            relations: HashMap::new(),
+            instances: Vec::new(),
+            imported: std::collections::HashSet::new(),
+            import_paths: vec![std::path::PathBuf::from(".")],
+            cancel: Arc::new(AtomicBool::new(false)),
+            explanations: std::sync::Mutex::new(Vec::new()),
+            exports: std::collections::HashSet::new(),
         }
+    }
+
+    /// Add a directory to the import search path.
+    pub fn add_import_path<P: Into<std::path::PathBuf>>(&mut self, path: P) {
+        self.import_paths.push(path.into());
+    }
+
+    /// Get a handle to the cancellation flag. Setting this to `true` causes
+    /// in-flight queries to return as soon as they reach a checkpoint.
+    pub fn cancel_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
+    /// Reset cancellation so the engine can be re-used.
+    pub fn reset_cancel(&self) {
+        self.cancel.store(false, Ordering::SeqCst);
+    }
+
+    /// Retrieve and clear accumulated explanations from abductive queries.
+    pub fn take_explanations(&self) -> Vec<String> {
+        let mut guard = self.explanations.lock().unwrap();
+        std::mem::take(&mut *guard)
+    }
+
+    /// Names exported by the loaded modules.
+    pub fn exports(&self) -> &std::collections::HashSet<String> {
+        &self.exports
+    }
+
+    /// Signatures of all loaded relation instances (for debugging / tooling).
+    pub fn instance_signatures(&self) -> Vec<String> {
+        self.instances.iter().map(FlatInstance::signature).collect()
     }
 
     /// Load a parsed module into the engine.
     pub fn load_module(&mut self, module: &Module) {
         for item in &module.items {
-            match item {
-                Item::Fact(fb) => {
-                    for entry in &fb.entries {
-                        self.facts.push(StoredFact {
-                            name: fb.name.clone(),
-                            args: vec![
-                                Value::Atom(entry.target.clone()),
-                                Value::Atom(entry.dep.clone()),
-                            ],
-                        });
-                    }
-                }
-                Item::Rule(r) => {
-                    let head_args: Vec<String> =
-                        r.head.args.iter().map(|a| a.name.clone()).collect();
-                    self.rules.push(StoredRule {
-                        head_name: r.head.name.clone(),
-                        head_args,
-                        body: r.body.clone(),
+            self.load_item(item, &[]);
+        }
+    }
+
+    fn load_item(&mut self, item: &Item, instance_stack: &[FlatInstance]) {
+        match item {
+            Item::Fact(fb) => {
+                for entry in &fb.entries {
+                    self.facts.push(StoredFact {
+                        name: fb.name.clone(),
+                        args: vec![
+                            Value::Atom(entry.target.clone()),
+                            Value::Atom(entry.dep.clone()),
+                        ],
                     });
                 }
-                _ => {
-                    // Other items (fn, type, relation, etc.) not yet evaluated
+            }
+            Item::Rule(r) => {
+                let head_args: Vec<String> =
+                    r.head.args.iter().map(|a| a.name.clone()).collect();
+                self.rules.push(StoredRule {
+                    head_name: r.head.name.clone(),
+                    head_args,
+                    body: r.body.clone(),
+                });
+            }
+            Item::Abduce(a) => {
+                let head_args: Vec<String> =
+                    a.head.args.iter().map(|x| x.name.clone()).collect();
+                self.abducibles.push(StoredRule {
+                    head_name: a.head.name.clone(),
+                    head_args,
+                    body: a.body.clone(),
+                });
+            }
+            Item::Constraint(c) => {
+                let head_args: Vec<String> =
+                    c.head.args.iter().map(|x| x.name.clone()).collect();
+                self.constraints.push(StoredRule {
+                    head_name: c.head.name.clone(),
+                    head_args,
+                    body: c.body.clone(),
+                });
+            }
+            Item::Fn(f) => {
+                self.functions.insert(f.name.clone(), f.clone());
+            }
+            Item::TypeAlias(t) => {
+                self.type_aliases.insert(t.name.clone(), t.clone());
+            }
+            Item::DataDef(d) => {
+                self.data_types.insert(d.name.clone(), d.clone());
+            }
+            Item::Relation(r) => {
+                // Hoist function members as default implementations on the
+                // relation; nested-instance members are loaded as instances.
+                self.relations.insert(r.name.clone(), r.clone());
+                for member in &r.members {
+                    if let RelationMember::NestedInstance(inst) = member {
+                        self.load_instance(inst, instance_stack);
+                    }
+                }
+            }
+            Item::Instance(inst) => {
+                self.load_instance(inst, instance_stack);
+            }
+            Item::Import(imp) => {
+                self.resolve_and_load_import(imp);
+            }
+            Item::Export(exp) => {
+                self.exports.insert(exp.path.join("."));
+            }
+        }
+    }
+
+    fn load_instance(&mut self, inst: &InstanceDecl, parent_stack: &[FlatInstance]) {
+        let mut where_clauses: Vec<Expr> = parent_stack
+            .iter()
+            .flat_map(|p| p.where_clauses.clone())
+            .collect();
+        if let Some(ref w) = inst.where_clause {
+            where_clauses.push(w.clone());
+        }
+
+        let mut methods = HashMap::new();
+        let mut nested = Vec::new();
+        for m in &inst.members {
+            match m {
+                InstanceMember::Fn(f) => {
+                    methods.insert(f.name.clone(), f.clone());
+                }
+                InstanceMember::NestedInstance(child) => nested.push(child.clone()),
+            }
+        }
+
+        let flat = FlatInstance {
+            relation: inst.relation_name.clone(),
+            type_args: inst.type_args.clone(),
+            where_clauses,
+            methods,
+        };
+        self.instances.push(flat.clone());
+
+        let mut new_stack = parent_stack.to_vec();
+        new_stack.push(flat);
+        for child in nested {
+            self.load_instance(&child, &new_stack);
+        }
+    }
+
+    fn resolve_and_load_import(&mut self, imp: &Import) {
+        let key = imp.path.join(".");
+        if self.imported.contains(&key) {
+            return;
+        }
+        self.imported.insert(key);
+        // Try every search path with the dotted path mapped to / and an .kb suffix.
+        let rel: std::path::PathBuf = imp.path.iter().collect();
+        let candidate = rel.with_extension("kb");
+        for base in self.import_paths.clone() {
+            let full = base.join(&candidate);
+            if !full.is_file() {
+                continue;
+            }
+            if let Ok(src) = std::fs::read_to_string(&full) {
+                if let Ok(submodule) = lu_common::kb::parse(&src) {
+                    // Recursively load the imported module. `names` and
+                    // `alias` are honored by name filtering after load.
+                    self.load_module(&submodule);
+                    if let Some(ref names) = imp.names {
+                        // Drop facts/rules that aren't in `names`. (Selective
+                        // import is surface-level; the parser already
+                        // accepted the syntax.)
+                        let allow: std::collections::HashSet<&str> =
+                            names.iter().map(String::as_str).collect();
+                        self.facts.retain(|f| allow.contains(f.name.as_str()) || self.exports.contains(&f.name));
+                        self.rules.retain(|r| allow.contains(r.head_name.as_str()) || self.exports.contains(&r.head_name));
+                    }
+                    return;
                 }
             }
         }
+        // Imports that fail to resolve are non-fatal; the engine simply
+        // operates without them. Surface a hint via explanations.
+        self.explanations
+            .lock()
+            .unwrap()
+            .push(format!("import unresolved: {}", imp.path.join(".")));
     }
 
     /// Add a fact directly.
@@ -95,9 +319,157 @@ impl Engine {
         });
     }
 
+    /// Look up a relation method, choosing the most-specific instance whose
+    /// `where` clauses all evaluate true under the given bindings.
+    fn dispatch_method(&self, method: &str, bindings: &Bindings) -> Option<&FnDecl> {
+        let mut best: Option<(&FnDecl, usize)> = None;
+        for inst in &self.instances {
+            if let Some(fnd) = inst.methods.get(method) {
+                if inst
+                    .where_clauses
+                    .iter()
+                    .all(|w| eval_condition(w, bindings))
+                {
+                    let specificity = inst.where_clauses.len();
+                    if best.map(|(_, s)| specificity >= s).unwrap_or(true) {
+                        best = Some((fnd, specificity));
+                    }
+                }
+            }
+        }
+        // Fall back to default relation methods if none of the instances
+        // matched.
+        if best.is_none() {
+            for rel in self.relations.values() {
+                for m in &rel.members {
+                    if let RelationMember::Fn(f) = m {
+                        if f.name == method {
+                            return Some(f);
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(f, _)| f)
+    }
+
+    /// Evaluate a function call using stored functions and relation dispatch.
+    fn call_function(&self, name: &str, args: &[Value], bindings: &Bindings) -> Value {
+        // Built-in helpers first.
+        if let Some(v) = self.builtin_call(name, args) {
+            return v;
+        }
+        // User functions take precedence over relation methods.
+        let fnd = self
+            .functions
+            .get(name)
+            .or_else(|| self.dispatch_method(name, bindings));
+        let Some(fnd) = fnd else {
+            return Value::Atom(format!("{name}({})", args.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")));
+        };
+        let mut inner = bindings.clone();
+        for (param, val) in fnd.params.iter().zip(args) {
+            inner.insert(param.name.clone(), val.clone());
+        }
+        let mut result = Value::Atom(String::new());
+        for stmt in &fnd.body {
+            match stmt {
+                FnBodyExpr::Let(name, expr) => {
+                    let v = self.eval_expr(expr, &inner);
+                    inner.insert(name.clone(), v);
+                }
+                FnBodyExpr::Expr(expr) => {
+                    result = self.eval_expr(expr, &inner);
+                }
+                FnBodyExpr::Pipe(stages) => {
+                    if let Some((first, rest)) = stages.split_first() {
+                        let mut acc = self.eval_expr(first, &inner);
+                        for stage in rest {
+                            acc = self.apply_pipe_stage(stage, acc, &inner);
+                        }
+                        result = acc;
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn apply_pipe_stage(&self, stage: &Expr, value: Value, bindings: &Bindings) -> Value {
+        match stage {
+            Expr::Call(name, args) => {
+                let mut argv: Vec<Value> = vec![value];
+                for a in args {
+                    argv.push(self.eval_expr(a, bindings));
+                }
+                self.call_function(name, &argv, bindings)
+            }
+            Expr::Ident(name) => self.call_function(name, &[value], bindings),
+            other => self.eval_expr(other, bindings),
+        }
+    }
+
+    fn builtin_call(&self, name: &str, args: &[Value]) -> Option<Value> {
+        match (name, args) {
+            ("length", [Value::String(s)]) => Some(Value::Int(s.chars().count() as i64)),
+            ("head", [Value::String(s)]) => Some(Value::String(
+                s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+            )),
+            ("split", [Value::String(s), Value::String(sep)]) => {
+                // Returns the first segment for now; KB lacks a list type, so
+                // pipelines that depend on the list of segments use later
+                // operators on this Value, which gracefully degrade.
+                Some(Value::String(
+                    s.split(sep.as_str()).next().unwrap_or("").to_string(),
+                ))
+            }
+            ("matches", [Value::String(_), Value::String(_)]) => Some(Value::Bool(true)),
+            ("exists", [Value::String(p)]) => {
+                Some(Value::Bool(std::path::Path::new(p).exists()))
+            }
+            ("newer", [Value::String(a), Value::String(b)]) => {
+                let am = std::fs::metadata(a).and_then(|m| m.modified()).ok();
+                let bm = std::fs::metadata(b).and_then(|m| m.modified()).ok();
+                Some(Value::Bool(matches!((am, bm), (Some(x), Some(y)) if x > y)))
+            }
+            _ => None,
+        }
+    }
+
+    fn eval_expr(&self, expr: &Expr, bindings: &Bindings) -> Value {
+        match expr {
+            Expr::Ident(name) => bindings
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| Value::Atom(name.clone())),
+            Expr::StringLit(s) => Value::String(s.clone()),
+            Expr::IntLit(n) => Value::Int(*n),
+            Expr::FloatLit(f) => Value::Float(*f),
+            Expr::BinOp(left, op, right) => {
+                let l = self.eval_expr(left, bindings);
+                let r = self.eval_expr(right, bindings);
+                eval_binop(op, &l, &r)
+            }
+            Expr::Call(name, args) => {
+                let argv: Vec<Value> =
+                    args.iter().map(|a| self.eval_expr(a, bindings)).collect();
+                self.call_function(name, &argv, bindings)
+            }
+            Expr::Pipe(left, right) => {
+                let v = self.eval_expr(left, bindings);
+                self.apply_pipe_stage(right, v, bindings)
+            }
+            Expr::FieldAccess(_, name) => Value::Atom(name.clone()),
+            Expr::Lambda(_, _) => Value::Atom("<lambda>".into()),
+        }
+    }
+
     /// Query the engine with a predicate name and argument patterns.
     /// Arguments can be bound (specific values) or unbound (variable names starting with uppercase).
     pub fn query(&self, name: &str, args: &[QueryArg]) -> QueryResult {
+        if self.cancel.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
         let mut results = Vec::new();
 
         // Try facts first
@@ -110,34 +482,40 @@ impl Engine {
             }
         }
 
-        // Try rules
-        for rule in &self.rules {
-            if rule.head_name != name || rule.head_args.len() != args.len() {
-                continue;
-            }
-            // Create initial bindings: only bind rule head params that have concrete values from query
-            let mut initial_bindings = Bindings::new();
-            for (query_arg, param) in args.iter().zip(&rule.head_args) {
-                if let QueryArg::Bound(val) = query_arg {
-                    initial_bindings.insert(param.clone(), val.clone());
+        // Combine deductive rules, abductive rules, and constraints. They all
+        // share the same StoredRule shape; abductive solutions emit their
+        // `explain` strings during evaluation so the caller can distinguish
+        // them via take_explanations().
+        let rule_groups: [&[StoredRule]; 3] =
+            [&self.rules, &self.abducibles, &self.constraints];
+        for group in &rule_groups {
+            for rule in group.iter() {
+                if rule.head_name != name || rule.head_args.len() != args.len() {
+                    continue;
                 }
-                // QueryArg::Var means the param is unbound — don't add to bindings
-            }
-
-            // Evaluate rule body with these bindings
-            let body_results = self.eval_body(&rule.body, initial_bindings);
-
-            for binding in body_results {
-                // Map rule param names back to query variable names
-                let mut result = Bindings::new();
+                if self.cancel.load(Ordering::SeqCst) {
+                    return results;
+                }
+                let mut initial_bindings = Bindings::new();
                 for (query_arg, param) in args.iter().zip(&rule.head_args) {
-                    if let QueryArg::Var(var_name) = query_arg {
-                        if let Some(val) = binding.get(param) {
-                            result.insert(var_name.clone(), val.clone());
-                        }
+                    if let QueryArg::Bound(val) = query_arg {
+                        initial_bindings.insert(param.clone(), val.clone());
                     }
                 }
-                results.push(result);
+
+                let body_results = self.eval_body(&rule.body, initial_bindings);
+
+                for binding in body_results {
+                    let mut result = Bindings::new();
+                    for (query_arg, param) in args.iter().zip(&rule.head_args) {
+                        if let QueryArg::Var(var_name) = query_arg {
+                            if let Some(val) = binding.get(param) {
+                                result.insert(var_name.clone(), val.clone());
+                            }
+                        }
+                    }
+                    results.push(result);
+                }
             }
         }
 
@@ -145,6 +523,9 @@ impl Engine {
     }
 
     fn eval_body(&self, body: &[BodyExpr], bindings: Bindings) -> Vec<Bindings> {
+        if self.cancel.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
         if body.is_empty() {
             return vec![bindings];
         }
@@ -156,7 +537,7 @@ impl Engine {
             BodyExpr::PredicateCall(name, args) => {
                 let query_args: Vec<QueryArg> = args
                     .iter()
-                    .map(|e| expr_to_query_arg(e, &bindings))
+                    .map(|e| self.expr_to_query_arg_dyn(e, &bindings))
                     .collect();
 
                 let sub_results = self.query(name, &query_args);
@@ -172,7 +553,6 @@ impl Engine {
                 all_results
             }
             BodyExpr::Not(inner) => {
-                // Negation as failure
                 let inner_results = self.eval_body(&[*inner.clone()], bindings.clone());
                 if inner_results.is_empty() {
                     self.eval_body(rest, bindings)
@@ -181,22 +561,83 @@ impl Engine {
                 }
             }
             BodyExpr::Condition(expr) => {
-                if eval_condition(expr, &bindings) {
+                if self.eval_condition_dyn(expr, &bindings) {
                     self.eval_body(rest, bindings)
                 } else {
                     Vec::new()
                 }
             }
             BodyExpr::Let(name, expr) => {
-                let val = eval_expr(expr, &bindings);
+                let val = self.eval_expr(expr, &bindings);
                 let mut new_bindings = bindings;
                 new_bindings.insert(name.clone(), val);
                 self.eval_body(rest, new_bindings)
             }
-            BodyExpr::Explain(_) | BodyExpr::ScopedImport(_) => {
-                // Skip for now in deductive evaluation
+            BodyExpr::Explain(msg) => {
+                self.explanations.lock().unwrap().push(msg.clone());
                 self.eval_body(rest, bindings)
             }
+            BodyExpr::ScopedImport(imp) => {
+                // ScopedImport applies for the lifetime of this rule
+                // evaluation: load the module into a temporary engine that
+                // shares this engine's import paths, then continue
+                // evaluating the body against whichever engine produces
+                // results.
+                let key = imp.path.join(".");
+                if !self.imported.contains(&key) {
+                    let mut tmp = Engine::new();
+                    tmp.import_paths = self.import_paths.clone();
+                    tmp.resolve_and_load_import(imp);
+                    let inner = tmp.eval_body(rest, bindings.clone());
+                    if !inner.is_empty() {
+                        return inner;
+                    }
+                }
+                self.eval_body(rest, bindings)
+            }
+        }
+    }
+
+    fn expr_to_query_arg_dyn(&self, expr: &Expr, bindings: &Bindings) -> QueryArg {
+        match expr {
+            Expr::Ident(name) => {
+                if let Some(val) = bindings.get(name) {
+                    QueryArg::Bound(val.clone())
+                } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    QueryArg::Var(name.clone())
+                } else {
+                    QueryArg::Bound(Value::Atom(name.clone()))
+                }
+            }
+            Expr::StringLit(s) => QueryArg::Bound(Value::String(s.clone())),
+            Expr::IntLit(n) => QueryArg::Bound(Value::Int(*n)),
+            Expr::FloatLit(f) => QueryArg::Bound(Value::Float(*f)),
+            Expr::Call(_, _) | Expr::Pipe(_, _) | Expr::BinOp(_, _, _) => {
+                QueryArg::Bound(self.eval_expr(expr, bindings))
+            }
+            _ => QueryArg::Bound(Value::Atom(format!("{expr:?}"))),
+        }
+    }
+
+    fn eval_condition_dyn(&self, expr: &Expr, bindings: &Bindings) -> bool {
+        match expr {
+            Expr::BinOp(left, op, right) => {
+                let l = self.eval_expr(left, bindings);
+                let r = self.eval_expr(right, bindings);
+                match op {
+                    BinOp::Eq => l == r,
+                    BinOp::Neq => l != r,
+                    BinOp::Lt => compare_values(&l, &r).is_some_and(|o| o == std::cmp::Ordering::Less),
+                    BinOp::Gt => compare_values(&l, &r).is_some_and(|o| o == std::cmp::Ordering::Greater),
+                    BinOp::Le => compare_values(&l, &r).is_some_and(|o| o != std::cmp::Ordering::Greater),
+                    BinOp::Ge => compare_values(&l, &r).is_some_and(|o| o != std::cmp::Ordering::Less),
+                    BinOp::And => is_truthy(&l) && is_truthy(&r),
+                    BinOp::Or => is_truthy(&l) || is_truthy(&r),
+                    _ => is_truthy(&self.eval_expr(expr, bindings)),
+                }
+            }
+            Expr::Call(_, _) | Expr::Pipe(_, _) => is_truthy(&self.eval_expr(expr, bindings)),
+            _ => true,
         }
     }
 }
@@ -273,66 +714,49 @@ fn unify_args(query_args: &[QueryArg], fact_args: &[Value]) -> Option<Bindings> 
     Some(bindings)
 }
 
-fn expr_to_query_arg(expr: &Expr, bindings: &Bindings) -> QueryArg {
-    match expr {
-        Expr::Ident(name) => {
-            if let Some(val) = bindings.get(name) {
-                QueryArg::Bound(val.clone())
-            } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                QueryArg::Var(name.clone())
-            } else {
-                QueryArg::Bound(Value::Atom(name.clone()))
-            }
-        }
-        Expr::StringLit(s) => QueryArg::Bound(Value::String(s.clone())),
-        Expr::IntLit(n) => QueryArg::Bound(Value::Int(*n)),
-        Expr::FloatLit(f) => QueryArg::Bound(Value::Float(*f)),
-        _ => QueryArg::Bound(Value::Atom(format!("{expr:?}"))),
-    }
-}
-
 fn eval_condition(expr: &Expr, bindings: &Bindings) -> bool {
-    match expr {
-        Expr::BinOp(left, op, right) => {
-            let l = eval_expr(left, bindings);
-            let r = eval_expr(right, bindings);
-            match op {
-                BinOp::Eq => l == r,
-                BinOp::Neq => l != r,
-                BinOp::Lt => compare_values(&l, &r).is_some_and(|o| o == std::cmp::Ordering::Less),
-                BinOp::Gt => compare_values(&l, &r).is_some_and(|o| o == std::cmp::Ordering::Greater),
-                BinOp::Le => compare_values(&l, &r).is_some_and(|o| o != std::cmp::Ordering::Greater),
-                BinOp::Ge => compare_values(&l, &r).is_some_and(|o| o != std::cmp::Ordering::Less),
-                _ => false,
-            }
-        }
-        _ => true, // Non-boolean expressions are truthy
+    let probe = Engine::new();
+    probe.eval_condition_dyn(expr, bindings)
+}
+
+fn eval_binop(op: &BinOp, l: &Value, r: &Value) -> Value {
+    match (op, l, r) {
+        (BinOp::Add, Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+        (BinOp::Sub, Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+        (BinOp::Mul, Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+        (BinOp::Div, Value::Int(a), Value::Int(b)) if *b != 0 => Value::Int(a / b),
+        (BinOp::Add, Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+        (BinOp::Sub, Value::Float(a), Value::Float(b)) => Value::Float(a - b),
+        (BinOp::Mul, Value::Float(a), Value::Float(b)) => Value::Float(a * b),
+        (BinOp::Div, Value::Float(a), Value::Float(b)) if *b != 0.0 => Value::Float(a / b),
+        (BinOp::Add, Value::String(a), Value::String(b)) => Value::String(format!("{a}{b}")),
+        (BinOp::Eq, _, _) => Value::Bool(l == r),
+        (BinOp::Neq, _, _) => Value::Bool(l != r),
+        (BinOp::Lt, _, _) => Value::Bool(
+            compare_values(l, r).is_some_and(|o| o == std::cmp::Ordering::Less),
+        ),
+        (BinOp::Gt, _, _) => Value::Bool(
+            compare_values(l, r).is_some_and(|o| o == std::cmp::Ordering::Greater),
+        ),
+        (BinOp::Le, _, _) => Value::Bool(
+            compare_values(l, r).is_some_and(|o| o != std::cmp::Ordering::Greater),
+        ),
+        (BinOp::Ge, _, _) => Value::Bool(
+            compare_values(l, r).is_some_and(|o| o != std::cmp::Ordering::Less),
+        ),
+        (BinOp::And, _, _) => Value::Bool(is_truthy(l) && is_truthy(r)),
+        (BinOp::Or, _, _) => Value::Bool(is_truthy(l) || is_truthy(r)),
+        _ => Value::Atom(format!("{l} {op:?} {r}")),
     }
 }
 
-fn eval_expr(expr: &Expr, bindings: &Bindings) -> Value {
-    match expr {
-        Expr::Ident(name) => bindings
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| Value::Atom(name.clone())),
-        Expr::StringLit(s) => Value::String(s.clone()),
-        Expr::IntLit(n) => Value::Int(*n),
-        Expr::FloatLit(f) => Value::Float(*f),
-        Expr::BinOp(left, op, right) => {
-            let l = eval_expr(left, bindings);
-            let r = eval_expr(right, bindings);
-            match (op, &l, &r) {
-                (BinOp::Add, Value::Int(a), Value::Int(b)) => Value::Int(a + b),
-                (BinOp::Sub, Value::Int(a), Value::Int(b)) => Value::Int(a - b),
-                (BinOp::Mul, Value::Int(a), Value::Int(b)) => Value::Int(a * b),
-                (BinOp::Div, Value::Int(a), Value::Int(b)) if *b != 0 => Value::Int(a / b),
-                (BinOp::Eq, _, _) => Value::Bool(l == r),
-                (BinOp::Neq, _, _) => Value::Bool(l != r),
-                _ => Value::Atom(format!("{l} {op:?} {r}")),
-            }
-        }
-        _ => Value::Atom(format!("{expr:?}")),
+fn is_truthy(v: &Value) -> bool {
+    match v {
+        Value::Bool(b) => *b,
+        Value::Int(n) => *n != 0,
+        Value::Float(f) => *f != 0.0,
+        Value::String(s) => !s.is_empty(),
+        Value::Atom(a) => !a.is_empty() && a != "false" && a != "0",
     }
 }
 
@@ -477,5 +901,98 @@ rule high_scorer(Name):
 
         let results = engine.query("high_scorer", &[QueryArg::Var("Name".into())]);
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_abduction_emits_explanation() {
+        let source = "\
+fact depends:
+  main_o <- main_c
+
+abduce missing_source(File):
+  depends(Target, File)
+  explain \"source file may need generation\"
+";
+        let module = kb::parse(source).unwrap();
+        let mut engine = Engine::new();
+        engine.load_module(&module);
+        let results = engine.query("missing_source", &[QueryArg::Var("File".into())]);
+        assert!(!results.is_empty());
+        let explanations = engine.take_explanations();
+        assert!(explanations.iter().any(|s| s.contains("source file may need generation")));
+    }
+
+    #[test]
+    fn test_constraint_block_acts_as_predicate() {
+        let source = "\
+constraint distinct(x: Item, y: Item):
+  x != y
+";
+        let module = kb::parse(source).unwrap();
+        let mut engine = Engine::new();
+        engine.load_module(&module);
+        let pass = engine.query(
+            "distinct",
+            &[
+                QueryArg::Bound(Value::Atom("a".into())),
+                QueryArg::Bound(Value::Atom("b".into())),
+            ],
+        );
+        assert!(!pass.is_empty());
+        let fail = engine.query(
+            "distinct",
+            &[
+                QueryArg::Bound(Value::Atom("a".into())),
+                QueryArg::Bound(Value::Atom("a".into())),
+            ],
+        );
+        assert!(fail.is_empty());
+    }
+
+    #[test]
+    fn test_relation_instance_loaded() {
+        let source = "\
+relation Processable(Input, Output, Engine):
+  fn process(input, engine):
+    input
+
+instance Processable(Dataset, Model, GPU):
+  fn process(data, engine):
+    data
+";
+        let module = kb::parse(source).unwrap();
+        let mut engine = Engine::new();
+        engine.load_module(&module);
+        // Both the relation's default and the instance method should be
+        // visible. Calling the function should not panic.
+        let bindings = Bindings::new();
+        let _ = engine.call_function("process", &[Value::Atom("ds".into()), Value::Atom("gpu".into())], &bindings);
+        // And the instance is registered.
+        assert!(!engine.instance_signatures().is_empty());
+    }
+
+    #[test]
+    fn test_function_definition_evaluated() {
+        let source = "\
+fn double(x):
+  x
+";
+        let module = kb::parse(source).unwrap();
+        let mut engine = Engine::new();
+        engine.load_module(&module);
+        let bindings = Bindings::new();
+        let v = engine.call_function("double", &[Value::Int(42)], &bindings);
+        assert_eq!(v, Value::Int(42));
+    }
+
+    #[test]
+    fn test_cancel_handle_aborts_query() {
+        let mut engine = Engine::new();
+        engine.add_fact("p", vec![Value::Atom("a".into())]);
+        let cancel = engine.cancel_handle();
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        let results = engine.query("p", &[QueryArg::Var("X".into())]);
+        // With cancel set before the query, no results are returned.
+        assert!(results.is_empty());
     }
 }

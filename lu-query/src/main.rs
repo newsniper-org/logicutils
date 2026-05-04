@@ -125,8 +125,14 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    // Execute query
-    let results = eng.query(&query_name, &query_args);
+    // Execute query, honoring --timeout via cooperative cancellation.
+    let results = match run_with_timeout(eng, &query_name, &query_args, cli.timeout) {
+        Ok(r) => r,
+        Err(TimeoutError::Timeout(secs)) => {
+            eprintln!("lu-query: query timed out after {secs}s");
+            return ExitCode::Error.into();
+        }
+    };
 
     if results.is_empty() {
         return ExitCode::Failure.into();
@@ -168,6 +174,41 @@ fn main() -> std::process::ExitCode {
     ExitCode::Success.into()
 }
 
+enum TimeoutError {
+    Timeout(u64),
+}
+
+fn run_with_timeout(
+    eng: Engine,
+    query_name: &str,
+    query_args: &[engine::QueryArg],
+    timeout_secs: Option<u64>,
+) -> Result<Vec<engine::Bindings>, TimeoutError> {
+    let cancel = eng.cancel_handle();
+    let query_name = query_name.to_string();
+    let query_args = query_args.to_vec();
+    let eng = std::sync::Arc::new(eng);
+    let eng_for_thread = std::sync::Arc::clone(&eng);
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        let r = eng_for_thread.query(&query_name, &query_args);
+        let _ = tx.send(r);
+    });
+
+    match timeout_secs {
+        Some(secs) => match rx.recv_timeout(std::time::Duration::from_secs(secs)) {
+            Ok(r) => Ok(r),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                Err(TimeoutError::Timeout(secs))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(Vec::new()),
+        },
+        None => Ok(rx.recv().unwrap_or_default()),
+    }
+}
+
 fn delegate_to_external(engine_path: &str, cli: &Cli) -> std::process::ExitCode {
     let mut cmd = std::process::Command::new(engine_path);
     for kb in &cli.kb {
@@ -178,6 +219,9 @@ fn delegate_to_external(engine_path: &str, cli: &Cli) -> std::process::ExitCode 
     }
     if cli.all {
         cmd.arg("--all");
+    }
+    if let Some(secs) = cli.timeout {
+        cmd.arg("--timeout").arg(secs.to_string());
     }
     cmd.arg(&cli.query);
 

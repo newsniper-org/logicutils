@@ -105,7 +105,101 @@ pub fn validate_dag(tasks: &[Task]) -> Result<(), ParError> {
     Ok(())
 }
 
-/// Execute tasks in parallel respecting dependencies.
+/// Options for execute_par.
+#[derive(Debug, Clone)]
+pub struct ExecOptions {
+    pub parallelism: usize,
+    pub keep_going: bool,
+    pub retry: usize,
+    pub prefix_output: bool,
+    /// All-or-nothing semantics: snapshot the content store path before
+    /// running and restore it on any failure.
+    pub transaction: Option<std::path::PathBuf>,
+}
+
+impl Default for ExecOptions {
+    fn default() -> Self {
+        Self {
+            parallelism: 1,
+            keep_going: false,
+            retry: 0,
+            prefix_output: false,
+            transaction: None,
+        }
+    }
+}
+
+/// Snapshot of a directory tree, used for transactional rollback.
+struct DirSnapshot {
+    src: std::path::PathBuf,
+    backup: std::path::PathBuf,
+}
+
+impl DirSnapshot {
+    fn capture(src: &std::path::Path) -> std::io::Result<Option<Self>> {
+        if !src.exists() {
+            return Ok(None);
+        }
+        let mut backup = std::env::temp_dir();
+        backup.push(format!(
+            "lu-par-tx-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        copy_dir_recursive(src, &backup)?;
+        Ok(Some(Self {
+            src: src.to_path_buf(),
+            backup,
+        }))
+    }
+
+    fn restore(self) -> std::io::Result<()> {
+        if self.src.exists() {
+            std::fs::remove_dir_all(&self.src)?;
+        }
+        copy_dir_recursive(&self.backup, &self.src)?;
+        let _ = std::fs::remove_dir_all(&self.backup);
+        Ok(())
+    }
+
+    fn discard(self) {
+        let _ = std::fs::remove_dir_all(&self.backup);
+    }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if !src.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(&from, &to)?;
+        } else if ft.is_symlink() {
+            #[cfg(unix)]
+            {
+                let target = std::fs::read_link(&from)?;
+                let _ = std::os::unix::fs::symlink(target, &to);
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::copy(&from, &to)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Execute tasks in parallel respecting dependencies (legacy positional API).
 pub fn execute_par(
     tasks: &[Task],
     parallelism: usize,
@@ -113,6 +207,32 @@ pub fn execute_par(
     retry: usize,
     prefix_output: bool,
 ) -> Result<Vec<TaskResult>, ParError> {
+    execute_par_with(
+        tasks,
+        ExecOptions {
+            parallelism,
+            keep_going,
+            retry,
+            prefix_output,
+            transaction: None,
+        },
+    )
+}
+
+/// Execute tasks in parallel respecting dependencies, with the full options
+/// struct (including transactional rollback).
+pub fn execute_par_with(
+    tasks: &[Task],
+    opts: ExecOptions,
+) -> Result<Vec<TaskResult>, ParError> {
+    let parallelism = opts.parallelism;
+    let keep_going = opts.keep_going;
+    let retry = opts.retry;
+    let prefix_output = opts.prefix_output;
+    let snapshot = match opts.transaction {
+        Some(ref path) => DirSnapshot::capture(path)?,
+        None => None,
+    };
     validate_dag(tasks)?;
 
     let task_map: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
@@ -263,6 +383,20 @@ pub fn execute_par(
     }
 
     let results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+
+    if let Some(snap) = snapshot {
+        let any_failed = results.iter().any(|r| !r.success);
+        if any_failed {
+            if let Err(e) = snap.restore() {
+                eprintln!("lu-par: transaction rollback failed: {e}");
+            } else {
+                eprintln!("lu-par: transaction rolled back content store");
+            }
+        } else {
+            snap.discard();
+        }
+    }
+
     Ok(results)
 }
 
@@ -397,5 +531,84 @@ mod tests {
         let results = execute_par(&tasks, 1, false, 0, false).unwrap();
         assert_eq!(results.len(), 1);
         assert!(!results[0].success);
+    }
+
+    #[test]
+    fn test_transaction_rolls_back_on_failure() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lu-par-tx-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("preserved.txt"), b"original").unwrap();
+
+        // First task succeeds and writes a new file; second task fails.
+        let scribble = tmp.join("scribble.txt");
+        let tasks = vec![
+            Task {
+                id: "ok".into(),
+                deps: vec![],
+                command: format!("echo modified > {} && echo new > {}", tmp.join("preserved.txt").display(), scribble.display()),
+            },
+            Task {
+                id: "fail".into(),
+                deps: vec!["ok".into()],
+                command: "false".into(),
+            },
+        ];
+
+        let opts = ExecOptions {
+            parallelism: 1,
+            keep_going: false,
+            retry: 0,
+            prefix_output: false,
+            transaction: Some(tmp.clone()),
+        };
+        let results = execute_par_with(&tasks, opts).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(!results.iter().all(|r| r.success));
+
+        // The transaction must restore the original content store: the file
+        // that existed before is back to its original bytes, and the file
+        // that the successful task created is gone.
+        let preserved = std::fs::read_to_string(tmp.join("preserved.txt")).unwrap();
+        assert_eq!(preserved, "original");
+        assert!(!scribble.exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_transaction_keeps_state_on_success() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lu-par-tx-ok-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let new_file = tmp.join("new.txt");
+        let tasks = vec![Task {
+            id: "ok".into(),
+            deps: vec![],
+            command: format!("echo created > {}", new_file.display()),
+        }];
+        let opts = ExecOptions {
+            parallelism: 1,
+            keep_going: false,
+            retry: 0,
+            prefix_output: false,
+            transaction: Some(tmp.clone()),
+        };
+        let results = execute_par_with(&tasks, opts).unwrap();
+        assert!(results.iter().all(|r| r.success));
+        assert!(new_file.exists());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

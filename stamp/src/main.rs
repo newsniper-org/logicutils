@@ -30,7 +30,8 @@ enum Command {
         /// Files to record
         files: Vec<PathBuf>,
 
-        /// Signature method(s): hash, hash:blake3, hash:sha3, checksum, checksum:crc32, size, timestamp
+        /// Signature method(s): hash, hash:blake3, hash:sha3, checksum,
+        /// checksum:crc32, checksum:crc64, checksum:crc128, size, timestamp
         #[arg(short, long, default_value = "hash")]
         method: Vec<String>,
     },

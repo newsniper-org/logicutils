@@ -30,7 +30,9 @@ or \fIalways\fR. May be repeated.
 Hash algorithm when \fB\-\-method=hash\fR: \fIblake3\fR (default) or \fIsha3\fR.
 .TP
 .BI \-\-checksum\-algo= ALGO
-Checksum algorithm when \fB\-\-method=checksum\fR: \fIcrc32\fR (default).
+Checksum algorithm when \fB\-\-method=checksum\fR: \fIcrc32\fR (default),
+\fIcrc64\fR (gated by the \fIcrc64\fR Cargo feature), or \fIcrc128\fR
+(gated by the \fIcrc128\fR Cargo feature).
 .TP
 .BI \-\-combine= MODE
 How to combine multiple methods: \fIany\fR (stale if any method says stale)

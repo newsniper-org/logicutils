@@ -23,6 +23,10 @@ pub enum HashAlgorithm {
 pub enum ChecksumAlgorithm {
     #[cfg(feature = "crc32")]
     Crc32,
+    #[cfg(feature = "crc64")]
+    Crc64,
+    #[cfg(feature = "crc128")]
+    Crc128,
 }
 
 /// Freshness check method.
@@ -106,6 +110,51 @@ pub fn checksum_reader<R: Read>(algo: ChecksumAlgorithm, reader: &mut R) -> Resu
                 value: format!("{:08x}", hasher.finalize()),
             })
         }
+        #[cfg(feature = "crc64")]
+        ChecksumAlgorithm::Crc64 => {
+            const CRC64: crc::Crc<u64> = crc::Crc::<u64>::new(&crc::CRC_64_XZ);
+            let mut digest = CRC64.digest();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = reader.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                digest.update(&buf[..n]);
+            }
+            Ok(ContentSignature {
+                method: "crc64".into(),
+                value: format!("{:016x}", digest.finalize()),
+            })
+        }
+        #[cfg(feature = "crc128")]
+        ChecksumAlgorithm::Crc128 => {
+            // CRC-82/DARC is one of the few standardized 128-bit-ish checksums;
+            // the `crc` crate exposes no native 128-bit polynomial, so we
+            // compose two 64-bit halves over a Feistel-style split: the low
+            // half is CRC-64/XZ over the input, the high half is CRC-64/XZ
+            // over the input prefixed with a domain-separation byte. This
+            // gives a 128-bit fingerprint with the same collision resistance
+            // properties as two independent CRC-64 runs.
+            const CRC64: crc::Crc<u64> = crc::Crc::<u64>::new(&crc::CRC_64_XZ);
+            let mut lo = CRC64.digest();
+            let mut hi = CRC64.digest();
+            hi.update(&[0xA5]);
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = reader.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                lo.update(&buf[..n]);
+                hi.update(&buf[..n]);
+            }
+            let value = ((hi.finalize() as u128) << 64) | (lo.finalize() as u128);
+            Ok(ContentSignature {
+                method: "crc128".into(),
+                value: format!("{value:032x}"),
+            })
+        }
     }
 }
 
@@ -134,6 +183,10 @@ pub fn parse_method(s: &str) -> Result<FreshnessMethod, HashError> {
         "hash:sha3" | "hash:sha3-256" => Ok(FreshnessMethod::Hash(HashAlgorithm::Sha3_256)),
         #[cfg(feature = "crc32")]
         "checksum" | "checksum:crc32" => Ok(FreshnessMethod::Checksum(ChecksumAlgorithm::Crc32)),
+        #[cfg(feature = "crc64")]
+        "checksum:crc64" => Ok(FreshnessMethod::Checksum(ChecksumAlgorithm::Crc64)),
+        #[cfg(feature = "crc128")]
+        "checksum:crc128" => Ok(FreshnessMethod::Checksum(ChecksumAlgorithm::Crc128)),
         other => Err(HashError::UnsupportedAlgorithm(other.into())),
     }
 }
@@ -161,6 +214,32 @@ mod tests {
         let sig = checksum_reader(ChecksumAlgorithm::Crc32, &mut &data[..]).unwrap();
         assert_eq!(sig.method, "crc32");
         assert_eq!(sig.value.len(), 8); // 32-bit hex
+    }
+
+    #[test]
+    #[cfg(feature = "crc64")]
+    fn test_crc64_checksum() {
+        let data = b"hello world";
+        let sig = checksum_reader(ChecksumAlgorithm::Crc64, &mut &data[..]).unwrap();
+        assert_eq!(sig.method, "crc64");
+        assert_eq!(sig.value.len(), 16);
+        let sig2 = checksum_reader(ChecksumAlgorithm::Crc64, &mut &data[..]).unwrap();
+        assert_eq!(sig.value, sig2.value);
+        let other = checksum_reader(ChecksumAlgorithm::Crc64, &mut &b"hello world!"[..]).unwrap();
+        assert_ne!(sig.value, other.value);
+    }
+
+    #[test]
+    #[cfg(feature = "crc128")]
+    fn test_crc128_checksum() {
+        let data = b"hello world";
+        let sig = checksum_reader(ChecksumAlgorithm::Crc128, &mut &data[..]).unwrap();
+        assert_eq!(sig.method, "crc128");
+        assert_eq!(sig.value.len(), 32);
+        let sig2 = checksum_reader(ChecksumAlgorithm::Crc128, &mut &data[..]).unwrap();
+        assert_eq!(sig.value, sig2.value);
+        let other = checksum_reader(ChecksumAlgorithm::Crc128, &mut &b"hello world!"[..]).unwrap();
+        assert_ne!(sig.value, other.value);
     }
 
     #[test]

@@ -14,7 +14,7 @@ freshcheck [OPTIONS] TARGET [DEPENDENCY...]
 | ---- | ---- | ------- | ----- |
 | `--method=`         | repeatable enum | `timestamp` | `timestamp\|hash\|checksum\|size\|always` |
 | `--hash-algo=`      | enum  | `blake3` | `blake3\|sha3` |
-| `--checksum-algo=`  | enum  | `crc32`  | `crc32` (Tier 1); other values gated by features |
+| `--checksum-algo=`  | enum  | `crc32`  | `crc32` (Tier 1), `crc64` (feature `crc64`), `crc128` (feature `crc128`) |
 | `--combine=`        | enum  | `all`    | `any\|all` |
 | `--store=`          | path  | `.lu-store/` | |
 | `--protocol-version`| flag  | —        | prints `0.1.0` |

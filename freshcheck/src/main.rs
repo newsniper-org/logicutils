@@ -12,7 +12,8 @@ struct Cli {
     /// Dependency files
     deps: Vec<PathBuf>,
 
-    /// Freshness method(s): timestamp, hash, hash:blake3, hash:sha3, checksum, checksum:crc32, size, always
+    /// Freshness method(s): timestamp, hash, hash:blake3, hash:sha3, checksum,
+    /// checksum:crc32, checksum:crc64, checksum:crc128, size, always
     #[arg(long, default_value = "timestamp")]
     method: Vec<String>,
 
