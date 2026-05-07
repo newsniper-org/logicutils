@@ -7,8 +7,9 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "lu-expand", about = "Combinatorial pattern expansion")]
 struct Cli {
-    /// Template string with {NAME} placeholders
-    template: String,
+    /// Template string with {NAME} placeholders (omitted when
+    /// `--protocol-version` is given).
+    template: Option<String>,
 
     /// Variable domains: NAME=val1,val2,...
     #[arg(short, long)]
@@ -60,9 +61,14 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     if cli.protocol_version {
-        println!("0.1.0");
+        println!("0.2.0");
         return ExitCode::Success.into();
     }
+
+    let Some(template) = cli.template.as_deref() else {
+        eprintln!("lu-expand: missing TEMPLATE argument");
+        return ExitCode::Error.into();
+    };
 
     let mut domains = lu_expand::VarDomains::new();
 
@@ -133,7 +139,7 @@ fn main() -> std::process::ExitCode {
 
     if combinations.is_empty() || (combinations.len() == 1 && domains.is_empty()) {
         // No variables = just print template as-is
-        println!("{}", cli.template);
+        println!("{}", template);
         return ExitCode::Success.into();
     }
 
@@ -144,7 +150,7 @@ fn main() -> std::process::ExitCode {
         let sep = cli.sep.as_deref().unwrap_or("\n");
         let expanded: Vec<String> = combinations
             .iter()
-            .map(|b| lu_match::expand_template(&cli.template, b))
+            .map(|b| lu_match::expand_template(&template, b))
             .collect();
         print!("{}", expanded.join(sep));
         if sep != "\n" {
@@ -161,7 +167,7 @@ fn main() -> std::process::ExitCode {
         };
 
         for bindings in &combinations {
-            let expanded = lu_match::expand_template(&cli.template, bindings);
+            let expanded = lu_match::expand_template(&template, bindings);
             let mut rec = Record::new().field("expanded", &expanded);
             for key in &keys {
                 if let Some(val) = bindings.get(key) {

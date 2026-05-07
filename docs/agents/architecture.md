@@ -41,7 +41,7 @@ Anything else should be questioned in review.
 | `exit` | `ExitCode` enum mapping to `std::process::ExitCode`. |
 | `format` | `OutputFormat`, `Record`, `FormatWriter` — shared output. |
 | `hash` | `HashAlgorithm`, `ChecksumAlgorithm`, `FreshnessMethod`. |
-| `store` | `.lu-store/` on-disk nested hashtable. |
+| `store` | `.lu-store/` on-disk nested hashtable (Ticki collision resolution). |
 | `kb`   | `ast`, `lexer`, `parser` for the KB language. |
 
 ## Invariants

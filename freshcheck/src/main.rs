@@ -6,8 +6,8 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "freshcheck", about = "Check if a target is fresh relative to dependencies")]
 struct Cli {
-    /// Target file to check
-    target: PathBuf,
+    /// Target file to check (omitted when `--protocol-version` is given).
+    target: Option<PathBuf>,
 
     /// Dependency files
     deps: Vec<PathBuf>,
@@ -53,9 +53,14 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     if cli.protocol_version {
-        println!("0.1.0");
+        println!("0.2.0");
         return ExitCode::Success.into();
     }
+
+    let Some(target) = cli.target.clone() else {
+        eprintln!("freshcheck: missing TARGET argument");
+        return ExitCode::Error.into();
+    };
 
     let methods = match stamp::resolve_methods(&cli.method) {
         Ok(m) => m,
@@ -69,16 +74,16 @@ fn main() -> std::process::ExitCode {
     let combine: freshcheck::CombineMode = cli.combine.into();
     let dep_paths: Vec<&std::path::Path> = cli.deps.iter().map(|p| p.as_path()).collect();
 
-    match freshcheck::is_fresh(&store, &cli.target, &dep_paths, &methods, combine) {
+    match freshcheck::is_fresh(&store, &target, &dep_paths, &methods, combine) {
         Ok(true) => {
             if cli.verbose {
-                eprintln!("freshcheck: {} is fresh", cli.target.display());
+                eprintln!("freshcheck: {} is fresh", target.display());
             }
             ExitCode::Success.into()
         }
         Ok(false) => {
             if cli.verbose {
-                eprintln!("freshcheck: {} is stale", cli.target.display());
+                eprintln!("freshcheck: {} is stale", target.display());
             }
             ExitCode::Failure.into()
         }

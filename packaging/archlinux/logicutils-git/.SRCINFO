@@ -1,6 +1,6 @@
 pkgbase = logicutils-git
 	pkgdesc = Composable Unix-style utilities for logic-enhanced builds (git, in-house)
-	pkgver = 0.1.0.r0.g0000000
+	pkgver = 0.2.0.r0.g0000000
 	pkgrel = 1
 	url = https://github.com/newsniper-org/logicutils
 	arch = x86_64
@@ -13,7 +13,7 @@ pkgbase = logicutils-git
 	optdepends = slurm-llnl: SLURM cluster backend for lu-queue
 	optdepends = gridengine: SGE cluster backend for lu-queue
 	optdepends = openpbs: PBS cluster backend for lu-queue
-	provides = logicutils=0.1.0.r0.g0000000
+	provides = logicutils=0.2.0.r0.g0000000
 	provides = freshcheck
 	provides = stamp
 	provides = lu-match

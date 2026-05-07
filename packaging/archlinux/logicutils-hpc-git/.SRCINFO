@@ -1,6 +1,6 @@
 pkgbase = logicutils-hpc-git
 	pkgdesc = logicutils built with SLURM/SGE/PBS queue backends and SHA3 (HPC, git, in-house)
-	pkgver = 0.1.0.r0.g0000000
+	pkgver = 0.2.0.r0.g0000000
 	pkgrel = 1
 	url = https://github.com/newsniper-org/logicutils
 	arch = x86_64
@@ -13,7 +13,7 @@ pkgbase = logicutils-hpc-git
 	optdepends = slurm-llnl: SLURM workload manager client (sbatch, squeue, scancel)
 	optdepends = gridengine: SGE workload manager client (qsub, qstat, qdel)
 	optdepends = openpbs: PBS workload manager client (qsub, qstat, qdel)
-	provides = logicutils-hpc=0.1.0.r0.g0000000
+	provides = logicutils-hpc=0.2.0.r0.g0000000
 	provides = freshcheck
 	provides = stamp
 	provides = lu-match

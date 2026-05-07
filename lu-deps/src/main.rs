@@ -55,7 +55,7 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     if cli.protocol_version {
-        println!("0.1.0");
+        println!("0.2.0");
         return ExitCode::Success.into();
     }
 

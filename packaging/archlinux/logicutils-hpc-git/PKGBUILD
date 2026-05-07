@@ -5,7 +5,7 @@
 pkgname=logicutils-hpc-git
 _pkgname=logicutils-hpc
 _upstream=logicutils
-pkgver=0.1.0.r0.g0000000
+pkgver=0.2.0.r0.g0000000
 pkgrel=1
 pkgdesc="logicutils built with SLURM/SGE/PBS queue backends and SHA3 (HPC, git, in-house)"
 arch=('x86_64' 'aarch64')

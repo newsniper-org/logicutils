@@ -4,7 +4,7 @@ Every logicutils utility, including third-party reimplementations,
 **must** obey the rules in this file. The protocol is versioned via
 `--protocol-version` and follows semver.
 
-Current version: **0.1.0**.
+Current version: **0.2.0**.
 
 ## Exit codes
 
@@ -48,7 +48,7 @@ These flags have the same meaning in every utility:
 | ---- | ------- |
 | `--format=FORMAT`     | Output format (table above). |
 | `--store=PATH`        | Content store path. Default `.lu-store/`. |
-| `--protocol-version`  | Print `0.1.0` and exit 0. |
+| `--protocol-version`  | Print `0.2.0` and exit 0. |
 | `-h`, `--help`        | Usage and exit 0. |
 
 ## Stdin / stdout discipline

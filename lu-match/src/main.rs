@@ -8,7 +8,8 @@ use std::path::PathBuf;
 #[command(name = "lu-match", about = "Multi-wildcard pattern matching")]
 struct Cli {
     /// Pattern with named wildcards, e.g. `align-{X}-{Y}.bam`
-    pattern: String,
+    /// (omitted when `--protocol-version` is given).
+    pattern: Option<String>,
 
     /// Candidate strings to match (if empty, reads from stdin)
     candidates: Vec<String>,
@@ -61,11 +62,16 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     if cli.protocol_version {
-        println!("0.1.0");
+        println!("0.2.0");
         return ExitCode::Success.into();
     }
 
-    let pattern = match lu_match::parse_pattern(&cli.pattern) {
+    let Some(pattern_str) = cli.pattern.as_deref() else {
+        eprintln!("lu-match: missing PATTERN argument");
+        return ExitCode::Error.into();
+    };
+
+    let pattern = match lu_match::parse_pattern(pattern_str) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("lu-match: {e}");

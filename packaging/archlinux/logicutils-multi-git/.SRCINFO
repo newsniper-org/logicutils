@@ -1,6 +1,6 @@
 pkgbase = logicutils-multi-git
 	pkgdesc = logicutils as a single multicall binary with symlinks (Tier 1, git, in-house)
-	pkgver = 0.1.0.r0.g0000000
+	pkgver = 0.2.0.r0.g0000000
 	pkgrel = 1
 	url = https://github.com/newsniper-org/logicutils
 	arch = x86_64
@@ -10,7 +10,7 @@ pkgbase = logicutils-multi-git
 	makedepends = cargo
 	makedepends = git
 	depends = gcc-libs
-	provides = logicutils-multi=0.1.0.r0.g0000000
+	provides = logicutils-multi=0.2.0.r0.g0000000
 	provides = freshcheck
 	provides = stamp
 	provides = lu-match

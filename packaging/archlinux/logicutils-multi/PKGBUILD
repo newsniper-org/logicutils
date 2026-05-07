@@ -6,7 +6,7 @@
 # backends via --no-default-features.
 pkgname=logicutils-multi
 _upstream=logicutils
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="logicutils as a single multicall binary with symlinks (Tier 1, no crypto/cluster features)"
 arch=('x86_64' 'aarch64')

@@ -6,7 +6,7 @@ use lu_queue::JobStatus;
 #[command(name = "lu-queue", about = "Local and cluster queue abstraction")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 
     /// Queue engine: local, slurm, sge, pbs
     #[arg(long, default_value = "local", global = true)]
@@ -67,9 +67,14 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     if cli.protocol_version {
-        println!("0.1.0");
+        println!("0.2.0");
         return ExitCode::Success.into();
     }
+
+    let Some(command) = cli.command else {
+        eprintln!("lu-queue: missing subcommand (try `lu-queue --help`)");
+        return ExitCode::Error.into();
+    };
 
     let engine = match lu_queue::create_engine(&cli.engine) {
         Ok(e) => e,
@@ -79,7 +84,7 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    match cli.command {
+    match command {
         Command::Submit {
             command,
             deps,

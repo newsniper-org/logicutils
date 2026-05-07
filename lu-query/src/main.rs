@@ -9,7 +9,8 @@ use std::path::PathBuf;
 #[command(name = "lu-query", about = "Logic knowledge base query engine")]
 struct Cli {
     /// Query to evaluate, e.g. "stale(X)" or "depends(main_o, X)"
-    query: String,
+    /// (omitted when `--protocol-version` is given).
+    query: Option<String>,
 
     /// Knowledge base file(s)
     #[arg(short, long)]
@@ -67,13 +68,18 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     if cli.protocol_version {
-        println!("0.1.0");
+        println!("0.2.0");
         return ExitCode::Success.into();
     }
 
+    let Some(query_text) = cli.query.clone() else {
+        eprintln!("lu-query: missing QUERY argument");
+        return ExitCode::Error.into();
+    };
+
     // External engine delegation
     if let Some(ref engine_path) = cli.engine {
-        return delegate_to_external(engine_path, &cli);
+        return delegate_to_external(engine_path, &cli, &query_text);
     }
 
     let mut eng = Engine::new();
@@ -117,7 +123,7 @@ fn main() -> std::process::ExitCode {
     }
 
     // Parse query
-    let (query_name, query_args) = match engine::parse_query(&cli.query) {
+    let (query_name, query_args) = match engine::parse_query(&query_text) {
         Ok(q) => q,
         Err(e) => {
             eprintln!("lu-query: {e}");
@@ -209,7 +215,7 @@ fn run_with_timeout(
     }
 }
 
-fn delegate_to_external(engine_path: &str, cli: &Cli) -> std::process::ExitCode {
+fn delegate_to_external(engine_path: &str, cli: &Cli, query: &str) -> std::process::ExitCode {
     let mut cmd = std::process::Command::new(engine_path);
     for kb in &cli.kb {
         cmd.arg("--kb").arg(kb);
@@ -223,7 +229,7 @@ fn delegate_to_external(engine_path: &str, cli: &Cli) -> std::process::ExitCode 
     if let Some(secs) = cli.timeout {
         cmd.arg("--timeout").arg(secs.to_string());
     }
-    cmd.arg(&cli.query);
+    cmd.arg(query);
 
     match cmd.status() {
         Ok(status) => std::process::ExitCode::from(status.code().unwrap_or(2) as u8),

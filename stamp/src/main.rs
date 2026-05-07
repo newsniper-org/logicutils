@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[command(name = "stamp", about = "File content signature management")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 
     /// Output format
     #[arg(long, default_value = "plain", global = true)]
@@ -80,16 +80,21 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     if cli.protocol_version {
-        println!("0.1.0");
+        println!("0.2.0");
         return ExitCode::Success.into();
     }
+
+    let Some(command) = cli.command else {
+        eprintln!("stamp: missing subcommand (try `stamp --help`)");
+        return ExitCode::Error.into();
+    };
 
     let store = ContentStore::new(&cli.store);
     let out_format: OutputFormat = cli.format.into();
     let stdout = std::io::stdout();
     let mut writer = FormatWriter::new(stdout.lock(), out_format);
 
-    let result = match cli.command {
+    let result = match command {
         Command::Record { files, method } => {
             let methods = match stamp::resolve_methods(&method) {
                 Ok(m) => m,

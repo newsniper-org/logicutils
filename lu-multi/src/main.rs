@@ -33,7 +33,7 @@ fn main() {
                     0
                 }
                 Some("--protocol-version") => {
-                    println!("0.1.0");
+                    println!("0.2.0");
                     0
                 }
                 Some(sub) => dispatch(sub),

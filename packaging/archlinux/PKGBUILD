@@ -1,6 +1,6 @@
 # Maintainer: BYUNG-IK YEUN <yeun0908@gmail.com>
 pkgname=logicutils
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Composable Unix-style utilities for logic-enhanced builds (multi-wildcards, content-based freshness, logic engine, parallel/cluster execution)"
 arch=('x86_64' 'aarch64')

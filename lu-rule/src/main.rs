@@ -7,8 +7,9 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "lu-rule", about = "Pattern rule matching with backtracking")]
 struct Cli {
-    /// Target to match against rules
-    target: String,
+    /// Target to match against rules (omitted when `--protocol-version`
+    /// is given).
+    target: Option<String>,
 
     /// Rule file
     #[arg(long)]
@@ -62,9 +63,14 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     if cli.protocol_version {
-        println!("0.1.0");
+        println!("0.2.0");
         return ExitCode::Success.into();
     }
+
+    let Some(target) = cli.target.clone() else {
+        eprintln!("lu-rule: missing TARGET argument");
+        return ExitCode::Error.into();
+    };
 
     let rules = match lu_rule::read_rules(cli.rulefile.as_deref()) {
         Ok(r) => r,
@@ -75,7 +81,7 @@ fn main() -> std::process::ExitCode {
     };
 
     let backtrack = cli.backtrack || cli.all;
-    let matches = match lu_rule::match_rules(&rules, &cli.target, backtrack) {
+    let matches = match lu_rule::match_rules(&rules, &target, backtrack) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("lu-rule: {e}");
@@ -84,7 +90,7 @@ fn main() -> std::process::ExitCode {
     };
 
     if matches.is_empty() {
-        eprintln!("lu-rule: no rule matches '{}'", cli.target);
+        eprintln!("lu-rule: no rule matches '{}'", target);
         return ExitCode::Failure.into();
     }
 

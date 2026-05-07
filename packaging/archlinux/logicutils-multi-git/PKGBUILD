@@ -6,7 +6,7 @@
 pkgname=logicutils-multi-git
 _pkgname=logicutils-multi
 _upstream=logicutils
-pkgver=0.1.0.r0.g0000000
+pkgver=0.2.0.r0.g0000000
 pkgrel=1
 pkgdesc="logicutils as a single multicall binary with symlinks (Tier 1, git, in-house)"
 arch=('x86_64' 'aarch64')

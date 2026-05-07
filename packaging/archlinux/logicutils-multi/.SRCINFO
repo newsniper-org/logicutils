@@ -1,6 +1,6 @@
 pkgbase = logicutils-multi
 	pkgdesc = logicutils as a single multicall binary with symlinks (Tier 1, no crypto/cluster features)
-	pkgver = 0.1.0
+	pkgver = 0.2.0
 	pkgrel = 1
 	url = https://github.com/newsniper-org/logicutils
 	arch = x86_64
@@ -25,7 +25,7 @@ pkgbase = logicutils-multi
 	conflicts = logicutils-hpc
 	conflicts = logicutils-hpc-git
 	options = !lto
-	source = logicutils-0.1.0.tar.gz::https://github.com/newsniper-org/logicutils/archive/refs/tags/v0.1.0.tar.gz
+	source = logicutils-0.2.0.tar.gz::https://github.com/newsniper-org/logicutils/archive/refs/tags/v0.2.0.tar.gz
 	sha256sums = SKIP
 
 pkgname = logicutils-multi
