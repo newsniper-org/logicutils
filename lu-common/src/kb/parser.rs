@@ -235,7 +235,7 @@ impl Parser {
             } else {
                 None
             };
-            args.push(TypedArg { name, type_ann });
+            args.push(TypedArg { name, type_ann, kind_ann: None });
             if matches!(self.peek(), Token::Comma) {
                 self.advance();
             } else {
@@ -500,6 +500,7 @@ impl Parser {
         Ok(RelationDecl {
             name,
             params,
+            fundeps: Vec::new(),
             members,
         })
     }
@@ -561,6 +562,7 @@ impl Parser {
             type_args,
             where_clause,
             members,
+            overlap: false,
         })
     }
 

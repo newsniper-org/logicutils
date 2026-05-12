@@ -66,6 +66,21 @@ pub struct Predicate {
 pub struct TypedArg {
     pub name: String,
     pub type_ann: Option<TypeExpr>,
+    /// Kind annotation for HKT-aware relation parameters (v0.x-smt).
+    /// `None` defaults to kind `Type`.
+    pub kind_ann: Option<KindExpr>,
+}
+
+/// Kind expressions for HKT (v0.x-smt extension).
+///
+/// `Type`, `Type -> Type`, `(Type -> Type) -> Type`, etc.
+/// `Slot(n)` is sugar for the first-order kind of arity `n`
+/// (i.e. `F(_)` ⇔ `Type -> Type`, `F(_, _)` ⇔ `Type -> Type -> Type`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KindExpr {
+    Type,
+    Arrow(Box<KindExpr>, Box<KindExpr>),
+    Slot(usize),
 }
 
 // === Abduce ===
@@ -199,7 +214,17 @@ pub struct DataField {
 pub struct RelationDecl {
     pub name: String,
     pub params: Vec<TypedArg>,
+    /// Functional dependencies (v0.x-smt).
+    /// `relation R(A, B, C) | A, B -> C` produces one Fundep here.
+    pub fundeps: Vec<Fundep>,
     pub members: Vec<RelationMember>,
+}
+
+/// A functional dependency between relation parameters (v0.x-smt).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fundep {
+    pub from: Vec<String>,
+    pub to: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -214,6 +239,9 @@ pub struct InstanceDecl {
     pub type_args: Vec<TypeExpr>,
     pub where_clause: Option<Expr>,
     pub members: Vec<InstanceMember>,
+    /// `overlap` keyword permitting this instance to coexist with
+    /// another whose head unifies (v0.x-smt; sec 8 Q1).
+    pub overlap: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -127,6 +127,65 @@ import utils.paths as P
 may also appear inside any block, in which case its bindings are scoped
 to that block.
 
+.SH SMT EXTENSIONS (v0.x\-smt)
+The
+.B v0.x\-smt
+branch extends lu\-kb with constructs needed to drive the adsmt SMT
+solver, while remaining a strict superset of v0.2 syntax.
+
+.SS Higher\-kinded type parameters
+Relation parameters may carry a kind annotation for HKT support:
+.RS
+.nf
+relation Functor(F : Type \-> Type):
+    fn map(f: A \-> B, fa: F(A)) \-> F(B)
+
+relation Bifunctor(F(_, _)):
+    fn bimap(f: A \-> C, g: B \-> D, fab: F(A, B)) \-> F(C, D)
+.fi
+.RE
+The slot form
+.B F(_)
+is sugar for
+.IR "F : Type -> Type" ;
+.B F(_, _)
+for
+.IR "Type -> Type -> Type" ,
+and so on. Kind annotations are optional; inference picks the
+smallest kind that makes the relation well\-formed.
+
+.SS Functional dependencies
+Relations may declare functional dependencies between their
+parameters with a vertical bar after the parameter list:
+.RS
+.nf
+relation Processable(Input, Output, Engine) | Input, Engine \-> Output:
+    fn process(input: Input, engine: Engine) \-> Output
+.fi
+.RE
+
+.SS Overlapping instances
+The default coherence check rejects two instance heads that unify.
+The
+.B overlap
+keyword opts in to allowing such a pair:
+.RS
+.nf
+overlap instance Eq(List(A)) where Eq(A):
+    fn eq(xs, ys): list_eq(eq, xs, ys)
+.fi
+.RE
+
+.SS Abductive output
+The existing
+.B abduce
+block drives adsmt's abductive engine. The
+.B explain
+string threads directly to the solver's abductive output and to the
+Lean4
+.B smt_abduce
+tactic's hole annotation.
+
 .SH SEE ALSO
 .BR lu\-query (1),
 .BR lu\-rule (1)
