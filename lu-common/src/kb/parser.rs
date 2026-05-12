@@ -103,6 +103,13 @@ impl Parser {
             Token::Data => self.parse_data().map(Item::DataDef),
             Token::Relation => self.parse_relation().map(Item::Relation),
             Token::Instance => self.parse_instance().map(Item::Instance),
+            // v0.x-smt: `overlap instance R(...)` prefix
+            Token::Overlap => {
+                self.advance();
+                let mut inst = self.parse_instance()?;
+                inst.overlap = true;
+                Ok(Item::Instance(inst))
+            }
             other => Err(ParseError {
                 line: self.current_line(),
                 msg: format!("unexpected token at top level: {other:?}"),
@@ -469,8 +476,14 @@ impl Parser {
         self.expect(&Token::Relation)?;
         let name = self.expect_ident()?;
         self.expect(&Token::LParen)?;
-        let params = self.parse_typed_arg_list()?;
+        let params = self.parse_relation_param_list()?;
         self.expect(&Token::RParen)?;
+        // v0.x-smt: optional functional dependencies — `| A, B -> C | ...`
+        let fundeps = if matches!(self.peek(), Token::Bar) {
+            self.parse_fundep_list()?
+        } else {
+            Vec::new()
+        };
         self.expect(&Token::Colon)?;
         self.skip_newlines();
         self.expect(&Token::Indent)?;
@@ -500,9 +513,124 @@ impl Parser {
         Ok(RelationDecl {
             name,
             params,
-            fundeps: Vec::new(),
+            fundeps,
             members,
         })
+    }
+
+    // v0.x-smt: relation parameter list with optional kind annotations.
+    //
+    // Each param is one of:
+    //   - `Ident`                          → kind defaults to `Type`
+    //   - `Ident(_)` or `Ident(_, _, ...)` → slot-sugar for first-order kind
+    //   - `Ident : KindExpr`                → explicit kind annotation
+    fn parse_relation_param_list(&mut self) -> Result<Vec<TypedArg>, ParseError> {
+        let mut args = Vec::new();
+        if matches!(self.peek(), Token::RParen) {
+            return Ok(args);
+        }
+        loop {
+            let name = self.expect_ident()?;
+            let kind_ann = if matches!(self.peek(), Token::LParen) {
+                Some(self.parse_slot_kind()?)
+            } else if matches!(self.peek(), Token::Colon) {
+                self.advance();
+                Some(self.parse_kind_expr()?)
+            } else {
+                None
+            };
+            args.push(TypedArg { name, type_ann: None, kind_ann });
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(args)
+    }
+
+    // `(_)`, `(_, _)`, `(_, _, _)` → KindExpr::Slot(n)
+    fn parse_slot_kind(&mut self) -> Result<KindExpr, ParseError> {
+        self.expect(&Token::LParen)?;
+        let mut count = 0usize;
+        loop {
+            // each slot is exactly the underscore identifier
+            match self.peek().clone() {
+                Token::Ident(ref s) if s == "_" => {
+                    self.advance();
+                    count += 1;
+                }
+                other => {
+                    return Err(ParseError {
+                        line: self.current_line(),
+                        msg: format!("expected `_` in slot kind, got {other:?}"),
+                    });
+                }
+            }
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(&Token::RParen)?;
+        Ok(KindExpr::Slot(count))
+    }
+
+    // KindExpr := atom (`->` atom)*       (right-associative arrow)
+    // atom    := `Type` | `(` KindExpr `)`
+    fn parse_kind_expr(&mut self) -> Result<KindExpr, ParseError> {
+        let lhs = self.parse_kind_atom()?;
+        if matches!(self.peek(), Token::RightArrow) {
+            self.advance();
+            let rhs = self.parse_kind_expr()?;
+            Ok(KindExpr::Arrow(Box::new(lhs), Box::new(rhs)))
+        } else {
+            Ok(lhs)
+        }
+    }
+
+    fn parse_kind_atom(&mut self) -> Result<KindExpr, ParseError> {
+        // `Type` is the kind atom; lowercase `type` is reserved for type
+        // aliases (Token::Type), so the kind atom appears as Ident("Type").
+        match self.peek().clone() {
+            Token::Ident(ref s) if s == "Type" => {
+                self.advance();
+                Ok(KindExpr::Type)
+            }
+            Token::LParen => {
+                self.advance();
+                let inner = self.parse_kind_expr()?;
+                self.expect(&Token::RParen)?;
+                Ok(inner)
+            }
+            other => Err(ParseError {
+                line: self.current_line(),
+                msg: format!("expected kind atom (`Type` or `(...)`) got {other:?}"),
+            }),
+        }
+    }
+
+    // `| A, B -> C | D -> E, F | ...`
+    fn parse_fundep_list(&mut self) -> Result<Vec<Fundep>, ParseError> {
+        let mut fundeps = Vec::new();
+        while matches!(self.peek(), Token::Bar) {
+            self.advance();
+            let from = self.parse_ident_list()?;
+            self.expect(&Token::RightArrow)?;
+            let to = self.parse_ident_list()?;
+            fundeps.push(Fundep { from, to });
+        }
+        Ok(fundeps)
+    }
+
+    fn parse_ident_list(&mut self) -> Result<Vec<String>, ParseError> {
+        let mut names = vec![self.expect_ident()?];
+        while matches!(self.peek(), Token::Comma) {
+            self.advance();
+            names.push(self.expect_ident()?);
+        }
+        Ok(names)
     }
 
     // === Instance ===
@@ -1018,6 +1146,111 @@ constraint valid(x, y):
                 assert_eq!(f.name, "apply");
             }
             _ => panic!("expected fn"),
+        }
+    }
+
+    // v0.x-smt: new relation/instance syntax tests
+
+    #[test]
+    fn test_relation_with_explicit_kind_annotation() {
+        let input = "relation Functor(F : Type -> Type):\n  fn map(f, fa): fa\n";
+        let module = parse(input).unwrap();
+        match &module.items[0] {
+            Item::Relation(r) => {
+                assert_eq!(r.name, "Functor");
+                assert_eq!(r.params.len(), 1);
+                assert_eq!(r.params[0].name, "F");
+                match &r.params[0].kind_ann {
+                    Some(KindExpr::Arrow(a, b)) => {
+                        assert!(matches!(**a, KindExpr::Type));
+                        assert!(matches!(**b, KindExpr::Type));
+                    }
+                    other => panic!("expected Arrow kind, got {other:?}"),
+                }
+            }
+            _ => panic!("expected relation"),
+        }
+    }
+
+    #[test]
+    fn test_relation_with_slot_sugar() {
+        let input = "relation Bifunctor(F(_, _)):\n  fn bimap(f, g, fab): fab\n";
+        let module = parse(input).unwrap();
+        match &module.items[0] {
+            Item::Relation(r) => {
+                assert_eq!(r.params[0].name, "F");
+                assert_eq!(r.params[0].kind_ann, Some(KindExpr::Slot(2)));
+            }
+            _ => panic!("expected relation"),
+        }
+    }
+
+    #[test]
+    fn test_relation_with_fundep() {
+        let input = "relation Proc(Input, Output, Engine) | Input, Engine -> Output:\n  fn run(i, e): i\n";
+        let module = parse(input).unwrap();
+        match &module.items[0] {
+            Item::Relation(r) => {
+                assert_eq!(r.fundeps.len(), 1);
+                assert_eq!(r.fundeps[0].from, vec!["Input".to_string(), "Engine".into()]);
+                assert_eq!(r.fundeps[0].to, vec!["Output".to_string()]);
+            }
+            _ => panic!("expected relation"),
+        }
+    }
+
+    #[test]
+    fn test_relation_with_multiple_fundeps() {
+        let input = "relation R(A, B, C) | A -> B | A, B -> C:\n  fn f(x): x\n";
+        let module = parse(input).unwrap();
+        match &module.items[0] {
+            Item::Relation(r) => {
+                assert_eq!(r.fundeps.len(), 2);
+                assert_eq!(r.fundeps[0].from, vec!["A".to_string()]);
+                assert_eq!(r.fundeps[0].to, vec!["B".to_string()]);
+                assert_eq!(r.fundeps[1].from, vec!["A".to_string(), "B".into()]);
+                assert_eq!(r.fundeps[1].to, vec!["C".to_string()]);
+            }
+            _ => panic!("expected relation"),
+        }
+    }
+
+    #[test]
+    fn test_overlap_instance() {
+        let input = "overlap instance Eq(Int):\n  fn eq(x, y): x == y\n";
+        let module = parse(input).unwrap();
+        match &module.items[0] {
+            Item::Instance(i) => {
+                assert!(i.overlap);
+                assert_eq!(i.relation_name, "Eq");
+            }
+            _ => panic!("expected instance"),
+        }
+    }
+
+    #[test]
+    fn test_plain_instance_is_not_overlap() {
+        let input = "instance Eq(Int):\n  fn eq(x, y): x == y\n";
+        let module = parse(input).unwrap();
+        match &module.items[0] {
+            Item::Instance(i) => assert!(!i.overlap),
+            _ => panic!("expected instance"),
+        }
+    }
+
+    #[test]
+    fn test_higher_order_kind_with_parens() {
+        let input = "relation MonadT(T : (Type -> Type) -> (Type -> Type)):\n  fn lift(m): m\n";
+        let module = parse(input).unwrap();
+        match &module.items[0] {
+            Item::Relation(r) => match &r.params[0].kind_ann {
+                Some(KindExpr::Arrow(a, b)) => {
+                    assert!(matches!(**a, KindExpr::Arrow(_, _)));
+                    assert!(matches!(**b, KindExpr::Arrow(_, _)));
+                }
+                other => panic!("expected nested Arrow, got {other:?}"),
+            },
+            _ => panic!("expected relation"),
         }
     }
 }

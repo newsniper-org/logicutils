@@ -20,6 +20,8 @@ pub enum Token {
     Or,
     Explain,
     As,
+    // v0.x-smt keyword
+    Overlap,
 
     // Literals
     Ident(String),
@@ -39,6 +41,7 @@ pub enum Token {
     FatArrow,    // =>
     RightArrow,  // ->
     Pipe,        // |>
+    Bar,         // |  (v0.x-smt: functional dependency separator)
     Eq,          // ==
     Neq,         // !=
     Lt,          // <
@@ -232,11 +235,9 @@ fn tokenize_line(line: &str, line_num: usize, tokens: &mut Vec<Located>) -> Resu
                     chars.next();
                     tokens.push(Located { token: Token::Pipe, line: line_num, col });
                 } else {
-                    return Err(LexError {
-                        line: line_num,
-                        col,
-                        msg: "unexpected '|', did you mean '|>'?".into(),
-                    });
+                    tokens.push(Located { token: Token::Bar, line: line_num, col });
+                    // continue lexing — bare `|` is the fundep separator (v0.x-smt).
+                    continue;
                 }
             }
             '<' => {
@@ -362,6 +363,7 @@ fn tokenize_line(line: &str, line_num: usize, tokens: &mut Vec<Located>) -> Resu
                     "or" => Token::Or,
                     "explain" => Token::Explain,
                     "as" => Token::As,
+                    "overlap" => Token::Overlap,
                     _ => Token::Ident(ident),
                 };
                 tokens.push(Located {
