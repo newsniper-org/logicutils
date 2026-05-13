@@ -101,6 +101,7 @@ impl Parser {
             Token::Fn => self.parse_fn().map(Item::Fn),
             Token::Type => self.parse_type_alias().map(Item::TypeAlias),
             Token::Data => self.parse_data().map(Item::DataDef),
+            Token::Enum => self.parse_enum().map(Item::EnumDef),
             Token::Relation => self.parse_relation().map(Item::Relation),
             Token::Instance => self.parse_instance().map(Item::Instance),
             // v0.x-smt: `overlap instance R(...)` prefix
@@ -468,6 +469,39 @@ impl Parser {
             self.advance();
         }
         Ok(DataDef { name, fields })
+    }
+
+    // === Enum (v0.x-smt v0.5) ===
+    //
+    // Syntax: `enum Name:` followed by an indented block of bare
+    // constructor identifiers, one per line.
+    //
+    //   enum Color:
+    //       Red
+    //       Green
+    //       Blue
+    //
+    // Each constructor is nullary (no payload), which is what makes
+    // the type a finite enum from the SMT side.
+    fn parse_enum(&mut self) -> Result<EnumDef, ParseError> {
+        self.expect(&Token::Enum)?;
+        let name = self.expect_ident()?;
+        self.expect(&Token::Colon)?;
+        self.skip_newlines();
+        self.expect(&Token::Indent)?;
+        let mut constructors: Vec<String> = Vec::new();
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek(), Token::Dedent | Token::Eof) {
+                break;
+            }
+            let ctor = self.expect_ident()?;
+            constructors.push(ctor);
+        }
+        if matches!(self.peek(), Token::Dedent) {
+            self.advance();
+        }
+        Ok(EnumDef { name, constructors })
     }
 
     // === Relation ===
@@ -1252,5 +1286,42 @@ constraint valid(x, y):
             },
             _ => panic!("expected relation"),
         }
+    }
+
+    // v0.x-smt v0.5: enum syntax tests
+
+    #[test]
+    fn test_parse_enum_block() {
+        let input = "enum Color:\n  Red\n  Green\n  Blue\n";
+        let module = parse(input).unwrap();
+        match &module.items[0] {
+            Item::EnumDef(e) => {
+                assert_eq!(e.name, "Color");
+                assert_eq!(e.constructors, vec!["Red", "Green", "Blue"]);
+            }
+            _ => panic!("expected enum"),
+        }
+    }
+
+    #[test]
+    fn test_parse_enum_single_constructor() {
+        let input = "enum Unit:\n  TT\n";
+        let module = parse(input).unwrap();
+        match &module.items[0] {
+            Item::EnumDef(e) => {
+                assert_eq!(e.name, "Unit");
+                assert_eq!(e.constructors.len(), 1);
+            }
+            _ => panic!("expected enum"),
+        }
+    }
+
+    #[test]
+    fn test_data_and_enum_coexist() {
+        let input = "data Point:\n  x: Int\n  y: Int\n\nenum Color:\n  Red\n  Green\n";
+        let module = parse(input).unwrap();
+        assert_eq!(module.items.len(), 2);
+        assert!(matches!(&module.items[0], Item::DataDef(_)));
+        assert!(matches!(&module.items[1], Item::EnumDef(_)));
     }
 }

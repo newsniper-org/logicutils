@@ -16,6 +16,8 @@ pub enum Item {
     Fn(FnDecl),
     TypeAlias(TypeAlias),
     DataDef(DataDef),
+    /// Finite-enum sum type (v0.x-smt v0.5).
+    EnumDef(EnumDef),
     Relation(RelationDecl),
     Instance(InstanceDecl),
 }
@@ -199,6 +201,17 @@ pub struct TypeAlias {
 pub struct DataDef {
     pub name: String,
     pub fields: Vec<DataField>,
+}
+
+/// Finite-enum sum type (v0.x-smt v0.5).
+///
+/// Each constructor is nullary and disjoint from every other
+/// constructor of the same enum; the adsmt backend exposes this as
+/// the `Datatypes` theory's finite-cardinality witness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumDef {
+    pub name: String,
+    pub constructors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

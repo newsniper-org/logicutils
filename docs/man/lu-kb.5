@@ -1,4 +1,4 @@
-.TH LU\-KB 5 "2026-05-07" "logicutils 0.2.0" "File Formats"
+.TH LU\-KB 5 "2026-05-13" "logicutils 0.5.0 (v0.x\-smt)" "File Formats"
 .SH NAME
 lu\-kb \- logicutils knowledge\-base language
 .SH DESCRIPTION
@@ -185,6 +185,32 @@ string threads directly to the solver's abductive output and to the
 Lean4
 .B smt_abduce
 tactic's hole annotation.
+
+.SS Finite enums (v0.5)
+The
+.B enum
+block declares a finite-cardinality sum type whose constructors are
+disjoint and exhaustive. Each constructor is nullary.
+.RS
+.nf
+enum Color:
+    Red
+    Green
+    Blue
+.fi
+.RE
+The adsmt backend exposes
+.B Color
+to its
+.B Datatypes
+theory with cardinality 3, contributes that bound to polite
+combination, and rejects assertions like
+.BR "Red = Green" .
+The existing
+.B data
+block remains the product/record form; use
+.B enum
+when every constructor is nullary and the type is meant to be finite.
 
 .SH SEE ALSO
 .BR lu\-query (1),

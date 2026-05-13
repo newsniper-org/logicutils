@@ -22,6 +22,7 @@ pub enum Token {
     As,
     // v0.x-smt keyword
     Overlap,
+    Enum,
 
     // Literals
     Ident(String),
@@ -364,6 +365,7 @@ fn tokenize_line(line: &str, line_num: usize, tokens: &mut Vec<Located>) -> Resu
                     "explain" => Token::Explain,
                     "as" => Token::As,
                     "overlap" => Token::Overlap,
+                    "enum" => Token::Enum,
                     _ => Token::Ident(ident),
                 };
                 tokens.push(Located {

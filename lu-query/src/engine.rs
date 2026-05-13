@@ -214,6 +214,12 @@ impl Engine {
             Item::DataDef(d) => {
                 self.data_types.insert(d.name.clone(), d.clone());
             }
+            Item::EnumDef(_e) => {
+                // v0.x-smt v0.5: enum declarations are recognised here
+                // for parser coverage but the runtime semantics are
+                // implemented by the adsmt backend's Datatypes theory.
+                // lu-query's existing pipeline ignores them.
+            }
             Item::Relation(r) => {
                 // Hoist function members as default implementations on the
                 // relation; nested-instance members are loaded as instances.
