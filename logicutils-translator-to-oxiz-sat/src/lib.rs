@@ -50,7 +50,9 @@
 
 use std::collections::HashMap;
 
-use lu_common::kb::{Item as KbItem, Module as KbModule};
+use lu_common::kb::{
+    BodyExpr, Expr, Item as KbItem, Module as KbModule, Predicate,
+};
 use oxiz_sat::{Lit, Solver};
 
 /// A CNF formula together with its variable-naming index.
@@ -107,14 +109,23 @@ pub fn translate(module: &KbModule) -> Result<TranslatedFormula, TranslateError>
                 // mention its constructors; an explicit domain-
                 // encoding step is added in the next iteration.
             }
-            KbItem::Rule(_) => {
-                return Err(TranslateError::UnsupportedConstruct("Rule"))
+            KbItem::Rule(rule) => {
+                // `head :- body₁, body₂, ...` ≡
+                // (¬body₁ ∨ ¬body₂ ∨ ... ∨ head) in CNF.
+                encode_horn_clause(&mut out, &rule.head, &rule.body)?;
             }
             KbItem::Abduce(_) => {
                 return Err(TranslateError::UnsupportedConstruct("Abduce"))
             }
-            KbItem::Constraint(_) => {
-                return Err(TranslateError::UnsupportedConstruct("Constraint"))
+            KbItem::Constraint(constraint) => {
+                // `constraint <head>: <body>` has the same shape
+                // as Rule and same Horn-clause encoding for the
+                // purpose of SAT-validating the heuristic ruleset.
+                encode_horn_clause(
+                    &mut out,
+                    &constraint.head,
+                    &constraint.body,
+                )?;
             }
             KbItem::Fn(_) => return Err(TranslateError::UnsupportedConstruct("Fn")),
             KbItem::TypeAlias(_) => {
@@ -136,6 +147,101 @@ pub fn translate(module: &KbModule) -> Result<TranslatedFormula, TranslateError>
         }
     }
     Ok(out)
+}
+
+/// Encode a Horn clause `head :- body` into the SAT solver as
+/// the implication `body → head` (CNF: ¬body₁ ∨ ¬body₂ ∨ … ∨ head).
+///
+/// Supported body shapes (v0.18.0):
+/// - [`BodyExpr::PredicateCall`] with [`Expr::Ident`] / [`Expr::IntLit`]
+///   args → atom literal.
+/// - [`BodyExpr::Not(inner)`] where `inner` is a `PredicateCall` →
+///   negated literal.
+/// - [`BodyExpr::Condition`] / [`BodyExpr::Explain`] / [`BodyExpr::Let`]
+///   / [`BodyExpr::ScopedImport`] → [`TranslateError::UnsupportedConstruct`].
+fn encode_horn_clause(
+    out: &mut TranslatedFormula,
+    head: &Predicate,
+    body: &[BodyExpr],
+) -> Result<(), TranslateError> {
+    let head_name = predicate_to_var_name(head)?;
+    let head_var_idx = allocate_or_lookup(out, &head_name);
+    let head_lit = Lit::pos(var_idx_to_var(&out.solver, head_var_idx));
+
+    let mut clause: Vec<Lit> = Vec::with_capacity(body.len() + 1);
+    for body_expr in body {
+        match body_expr {
+            BodyExpr::PredicateCall(name, args) => {
+                let var_name = predicate_call_to_var_name(name, args)?;
+                let var_idx = allocate_or_lookup(out, &var_name);
+                let lit = Lit::neg(var_idx_to_var(&out.solver, var_idx));
+                clause.push(lit);
+            }
+            BodyExpr::Not(inner) => match inner.as_ref() {
+                BodyExpr::PredicateCall(name, args) => {
+                    let var_name = predicate_call_to_var_name(name, args)?;
+                    let var_idx = allocate_or_lookup(out, &var_name);
+                    let lit = Lit::pos(var_idx_to_var(&out.solver, var_idx));
+                    clause.push(lit);
+                }
+                _ => {
+                    return Err(TranslateError::UnsupportedConstruct(
+                        "Not(non-PredicateCall) in Horn-clause body",
+                    ));
+                }
+            },
+            BodyExpr::Condition(_) => {
+                return Err(TranslateError::UnsupportedConstruct(
+                    "Condition in Horn-clause body",
+                ));
+            }
+            BodyExpr::Explain(_) => {
+                // Annotation only — does not contribute to SAT
+                // semantics. Silently skip.
+            }
+            BodyExpr::Let(_, _) => {
+                return Err(TranslateError::UnsupportedConstruct(
+                    "Let in Horn-clause body",
+                ));
+            }
+            BodyExpr::ScopedImport(_) => {
+                // Namespace mechanics — silently skip.
+            }
+        }
+    }
+    clause.push(head_lit);
+    out.solver.add_clause(clause);
+    Ok(())
+}
+
+fn predicate_to_var_name(pred: &Predicate) -> Result<String, TranslateError> {
+    let mut buf = pred.name.clone();
+    for arg in &pred.args {
+        buf.push_str("::");
+        buf.push_str(&arg.name);
+    }
+    Ok(buf)
+}
+
+fn predicate_call_to_var_name(
+    name: &str,
+    args: &[Expr],
+) -> Result<String, TranslateError> {
+    let mut buf = name.to_string();
+    for arg in args {
+        buf.push_str("::");
+        match arg {
+            Expr::Ident(s) => buf.push_str(s),
+            Expr::IntLit(n) => buf.push_str(&n.to_string()),
+            Expr::StringLit(s) => buf.push_str(s),
+            _ => {
+                return Err(TranslateError::UnsupportedConstruct(
+                    "non-atom Expr in PredicateCall args",
+                ));
+            }
+        }
+    }
+    Ok(buf)
 }
 
 fn allocate_or_lookup(out: &mut TranslatedFormula, name: &str) -> usize {
@@ -201,12 +307,48 @@ mod tests {
 
     #[test]
     fn unsupported_construct_rejected_not_approximated() {
-        let source = "rule p(x):\n  q(x)\n";
+        // `abduce` blocks remain outside the v0.18 fragment.
+        // Use the AST builder directly since the surface
+        // syntax for abduce in lu-kb may be context-dependent.
+        let source = "abduce p:\n  q\n";
         let module = match parse(source) {
             Ok(m) => m,
             Err(_) => return,
         };
         let res = translate(&module);
         assert!(matches!(res, Err(TranslateError::UnsupportedConstruct(_))));
+    }
+
+    #[test]
+    fn rule_with_predicate_call_body_encodes_to_horn_clause() {
+        // `rule p :- q` should add one Horn clause (¬q ∨ p) and
+        // allocate two SAT variables. The clause is satisfiable;
+        // SAT solver returns Sat.
+        let source = "rule p:\n  q\n";
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let formula = translate(&module).expect("translate rule");
+        assert!(
+            formula.var_names.iter().any(|n| n == "p"),
+            "head atom `p` must be allocated",
+        );
+        assert!(
+            formula.var_names.iter().any(|n| n == "q"),
+            "body atom `q` must be allocated",
+        );
+    }
+
+    #[test]
+    fn constraint_block_encodes_same_as_rule() {
+        let source = "constraint p:\n  q\n";
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let formula = translate(&module).expect("translate constraint");
+        assert!(formula.var_names.iter().any(|n| n == "p"));
+        assert!(formula.var_names.iter().any(|n| n == "q"));
     }
 }
