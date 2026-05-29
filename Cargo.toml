@@ -16,21 +16,24 @@ members = [
 ]
 
 [workspace.package]
-# v0.x-smt branch ⇔ adsmt version synchronisation rule (revised
-# 2026-05-29 from the original "+2" offset to a "match-minor"
-# convention; both workspaces have shared the same minor version
-# since the v0.17 mid-cycle audit).
+# v0.x-smt branch ⇔ adsmt version synchronisation rule.
 #
-# adsmt minor bump ⇒ matching logicutils minor bump in the same
-# conceptual unit. Patch bumps are independent (logicutils may
-# patch ahead of adsmt for additive feature work — see 0.17.1
-# below — and vice versa).
+# Original rule (set 2026-05-12): logicutils v0.x-smt minor =
+# adsmt minor + 2.
+# v0.17 mid-cycle audit (2026-05-29) relaxed it to match-minor.
+# v0.19 cycle (2026-05-29) **restored the original +2 offset**
+# per user policy. Patch bumps remain independent (logicutils
+# may patch ahead of adsmt for additive feature work and vice
+# versa).
 #
-# 0.17.1 → 0.18.0 minor bump: synchronises with adsmt 0.17 →
-# 0.18 cycle bump. Carries the K12 feature + the
-# `logicutils-translator-to-oxiz-sat` subcrate forward as 0.18.0
-# baseline; both already shipped under 0.17.1.
-version = "0.18.0"
+# adsmt minor bump ⇒ logicutils v0.x-smt bumps to (adsmt minor + 2)
+# in the same conceptual unit.
+#
+# 0.18.0 → 0.21.0 minor jump synchronises with adsmt 0.18 →
+# 0.19 cycle bump under the restored +2 offset. The intervening
+# minors (0.19, 0.20) are intentionally skipped — they belong
+# to the post-restoration accounting.
+version = "0.21.0"
 edition = "2024"
 license = "BSD-2-Clause"
 repository = "https://github.com/logicutils/logicutils"
