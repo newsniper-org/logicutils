@@ -16,6 +16,10 @@ pub enum HashAlgorithm {
     Blake3,
     #[cfg(feature = "sha3")]
     Sha3_256,
+    /// KangarooTwelve-256 with the empty customization string.
+    /// For per-domain customization, call [`crate::k12`] directly.
+    #[cfg(feature = "k12")]
+    K12_256,
 }
 
 /// Checksum algorithm selection.
@@ -88,6 +92,8 @@ pub fn hash_reader<R: Read>(algo: HashAlgorithm, reader: &mut R) -> Result<Conte
                 value: hex_encode(&result),
             })
         }
+        #[cfg(feature = "k12")]
+        HashAlgorithm::K12_256 => crate::k12::hash_reader(reader),
     }
 }
 
@@ -181,6 +187,8 @@ pub fn parse_method(s: &str) -> Result<FreshnessMethod, HashError> {
         "hash" | "hash:blake3" => Ok(FreshnessMethod::Hash(HashAlgorithm::Blake3)),
         #[cfg(feature = "sha3")]
         "hash:sha3" | "hash:sha3-256" => Ok(FreshnessMethod::Hash(HashAlgorithm::Sha3_256)),
+        #[cfg(feature = "k12")]
+        "hash:k12" | "hash:k12-256" => Ok(FreshnessMethod::Hash(HashAlgorithm::K12_256)),
         #[cfg(feature = "crc32")]
         "checksum" | "checksum:crc32" => Ok(FreshnessMethod::Checksum(ChecksumAlgorithm::Crc32)),
         #[cfg(feature = "crc64")]

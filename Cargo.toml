@@ -17,7 +17,14 @@ members = [
 [workspace.package]
 # v0.x-smt branch versioning rule: minor = adsmt minor + 2.
 # adsmt v0.3 ⇒ logicutils v0.x-smt v0.5.
-version = "0.17.0"
+# Patch bump 0.17.0 → 0.17.1 lands the new optional `k12` feature
+# in lu-common (KangarooTwelve-256 hash + customization-string
+# domain separation) as the foundation for adsmt's
+# breaking-version frozen-hash safeguard. Feature is opt-in and
+# additive, so the bump is a patch per the relationship rule's
+# compatibility-emphasis policy (λ-1-b.lu-ver = β in the
+# 2026-05-29 design discussion).
+version = "0.17.1"
 edition = "2024"
 license = "BSD-2-Clause"
 repository = "https://github.com/logicutils/logicutils"
