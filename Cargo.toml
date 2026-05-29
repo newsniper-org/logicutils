@@ -12,6 +12,7 @@ members = [
     "lu-par",
     "lu-deps",
     "lu-multi",
+    "logicutils-translator-to-oxiz-sat",
 ]
 
 [workspace.package]
