@@ -33,7 +33,10 @@ members = [
 # 0.19 cycle bump under the restored +2 offset. The intervening
 # minors (0.19, 0.20) are intentionally skipped — they belong
 # to the post-restoration accounting.
-version = "0.21.0"
+#
+# 0.21.0 → 0.23.0 (2026-05-29) opens the v0.x-smt slice paired
+# with adsmt's v0.21 cycle. Same +2 offset; 0.22 skipped.
+version = "0.23.0"
 edition = "2024"
 license = "BSD-2-Clause"
 repository = "https://github.com/logicutils/logicutils"
